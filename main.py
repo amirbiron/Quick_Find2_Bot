@@ -45,31 +45,34 @@ def save_guide_from_message(message: Message) -> str | None:
     """
     guide_text = message.text or message.caption
     
-    # --- Filter out messages that are too short or empty ---
     if not guide_text or len(guide_text) < 50:
-        logging.info(f"Message {message.message_id} skipped (too short or no text).")
+        logging.info(f"Message skipped (too short or no text).")
         return None
 
-    # --- Simple parsing: first line is title, the rest is description ---
+    # --- THIS IS THE KEY FIX ---
+    # Check if the message is forwarded to get the *original* IDs
+    if message.forward_from_chat and message.forward_from_message_id:
+        original_chat_id = message.forward_from_chat.id
+        original_message_id = message.forward_from_message_id
+    else: # Otherwise, it's a new message in the channel
+        original_chat_id = message.chat_id
+        original_message_id = message.message_id
+    # --- END OF FIX ---
+
     try:
         parts = guide_text.strip().split('\n', 1)
         title = parts[0].strip()
-        description = parts[1].strip() if len(parts) > 1 else "No description"
     except Exception:
         title = "Guide"
-        description = guide_text.strip()
         
     guide_document = {
         "title": title,
-        "description": description,
-        "original_message_id": message.message_id,
-        "original_chat_id": message.chat_id,
-        "full_text": guide_text
+        "original_message_id": original_message_id,
+        "original_chat_id": original_chat_id,
     }
     
-    # Save to DB, prevent duplicates
     guides_collection.update_one(
-        {"original_message_id": message.message_id, "original_chat_id": message.chat_id},
+        {"original_message_id": original_message_id, "original_chat_id": original_chat_id},
         {"$set": guide_document},
         upsert=True
     )
@@ -86,12 +89,12 @@ async def start_command(update: Update, context) -> None:
         {"$set": {"first_name": user.first_name, "last_name": user.last_name}},
         upsert=True,
     )
-    await update.message.reply_text("ברוך הבא לבוט המדריכים!")
+    await update.message.reply_text("ברוך הבא לבוט המדריכים! השתמש ב-/guides כדי לראות את כל המדריכים.")
 
 async def guides_command(update: Update, context) -> None:
-    """Sends a list of all guides from the database."""
+    """Sends a list of all guides with links to the original posts."""
     try:
-        all_guides = guides_collection.find().sort("title", 1) # Sort alphabetically
+        all_guides = guides_collection.find().sort("original_message_id", 1) 
         guides_list = list(all_guides)
 
         if not guides_list:
@@ -101,16 +104,29 @@ async def guides_command(update: Update, context) -> None:
         message = "📖 *רשימת המדריכים הזמינים:*\n\n"
         for guide in guides_list:
             title = guide.get("title", "ללא כותרת")
-            message += f"🔹 {title}\n"
+            chat_id = guide.get("original_chat_id")
+            msg_id = guide.get("original_message_id")
+            
+            if chat_id and msg_id:
+                link_chat_id = str(chat_id).replace("-100", "", 1)
+                link = f"https://t.me/c/{link_chat_id}/{msg_id}"
+                message += f"🔹 [{title}]({link})\n"
+            else:
+                 message += f"🔹 {title} (אין קישור ישיר)\n"
 
-        await update.message.reply_text(message, parse_mode='Markdown')
+        await update.message.reply_text(
+            message, 
+            parse_mode='Markdown', 
+            disable_web_page_preview=True
+        )
     except Exception as e:
         logging.error(f"Error fetching guides: {e}")
         await update.message.reply_text("אירעה שגיאה בעת שליפת המדריכים.")
 
 async def handle_new_guide_in_channel(update: Update, context) -> None:
     """Handles new posts in the channel."""
-    save_guide_from_message(update.channel_post) # Note: use update.channel_post here
+    if update.channel_post:
+        save_guide_from_message(update.channel_post)
 
 async def handle_forwarded_guide(update: Update, context) -> None:
     """Handles messages forwarded by an admin to fill the database."""
@@ -125,12 +141,9 @@ async def handle_forwarded_guide(update: Update, context) -> None:
 # =========================================================================
 ptb_application = Application.builder().token(BOT_TOKEN).build()
 
-# --- Register Handlers ---
-# 1. Standard commands
 ptb_application.add_handler(CommandHandler("start", start_command))
 ptb_application.add_handler(CommandHandler("guides", guides_command))
 
-# 2. Handler for new posts in your channel
 if CHANNEL_ID:
     ptb_application.add_handler(
         MessageHandler(
@@ -139,7 +152,6 @@ if CHANNEL_ID:
         )
     )
 
-# 3. Handler for forwarded messages (to manually add old guides)
 ptb_application.add_handler(MessageHandler(filters.FORWARDED & ~filters.POLL, handle_forwarded_guide))
 
 # =========================================================================

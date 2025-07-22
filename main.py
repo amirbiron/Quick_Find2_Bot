@@ -25,8 +25,7 @@ CHANNEL_ID = os.environ.get("CHANNEL_ID")
 ADMIN_ID = os.environ.get("ADMIN_ID")
 
 # --- Constants ---
-GUIDES_PER_PAGE = 5 # Reduced for better layout with more buttons
-MAX_BUTTON_TEXT_LENGTH = 40
+GUIDES_PER_PAGE = 5
 
 # --- Basic Setup & Database ---
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -67,34 +66,35 @@ def build_guides_paginator(page: int = 0, for_delete=False):
     guides_to_skip = page * GUIDES_PER_PAGE
     guides = list(guides_collection.find().sort("original_message_id", 1).skip(guides_to_skip).limit(GUIDES_PER_PAGE))
     
-    message_text = "📖 *רשימת המדריכים הזמינים:*\n"
-    if for_delete:
-        message_text = "🗑️ *בחר מדריך למחיקה:*\n"
-    
+    # --- NEW CLEANER LAYOUT ---
+    message_text = ""
     keyboard = []
+
+    if for_delete:
+        message_text = "🗑️ *בחר מדריך למחיקה:*\n\n"
+    else:
+        message_text = "📖 *רשימת המדריכים הזמינים:*\n\n"
+
     for guide in guides:
         title = guide.get("title", "ללא כותרת")
-        if len(title.encode('utf-8')) > MAX_BUTTON_TEXT_LENGTH:
-            display_title = title[:25] + "..."
-        else:
-            display_title = title
-            
         guide_id_str = str(guide["_id"])
         chat_id = guide.get("original_chat_id")
         msg_id = guide.get("original_message_id")
         link = f"https://t.me/c/{str(chat_id).replace('-100', '', 1)}/{msg_id}"
 
+        # Add title as plain text to the message body
+        message_text += f"🔹 {title}\n"
+        
+        # Add a corresponding row of action buttons
         if for_delete:
-            # Row 1: Title
-            keyboard.append([InlineKeyboardButton(display_title, url=link)])
-            # Row 2: Actions (View and Delete) - this will be full width
             keyboard.append([
                 InlineKeyboardButton("צפה 👁️", url=link),
                 InlineKeyboardButton("מחק 🗑️", callback_data=f"delete:{guide_id_str}")
             ])
         else:
-            keyboard.append([InlineKeyboardButton(display_title, url=link)])
+            keyboard.append([InlineKeyboardButton("פתח מדריך 🔗", url=link)])
 
+    # --- Pagination buttons ---
     nav_buttons = []
     callback_prefix = "deletepage" if for_delete else "page"
     if page > 0: nav_buttons.append(InlineKeyboardButton("◀️ הקודם", callback_data=f"{callback_prefix}:{page-1}"))
@@ -108,20 +108,29 @@ def build_guides_paginator(page: int = 0, for_delete=False):
 # Bot Handlers
 # =========================================================================
 async def start_command(update: Update, context) -> None:
-    # (The content of this function remains the same)
     user = update.effective_user
     users_collection.update_one({"user_id": user.id}, {"$set": {"first_name": user.first_name, "last_name": user.last_name}}, upsert=True)
+    
+    # --- FULL, RESTORED START MESSAGE AND BUTTONS ---
     start_text = """
 👋 שלום וברוך הבא לערוץ!
 אם זו הפעם הראשונה שלך פה – הכנתי לך ערכת התחלה מסודרת 🎁
+מה תמצא כאן?
+📌 מדריכים שימושיים בעברית
+🧰 כלים מומלצים (AI, מדריכים לאנדרואיד, בוטים)
+💡 רעיונות לפרויקטים אמיתיים
+📥 טופס לשיתוף אנונימי של כלים או מחשבות
 בחר מה שתרצה מתוך הכפתורים למטה ⬇️
 """
     keyboard = [
         [InlineKeyboardButton("🧹 מדריך ניקוי מטמון (סמסונג)", url="https://t.me/AndroidAndAI/17")],
         [InlineKeyboardButton("🧠 מה ChatGPT באמת זוכר עליכם?", url="https://t.me/AndroidAndAI/20")],
+        [InlineKeyboardButton("💸 טריק להנחה ל-GPT", url="https://t.me/AndroidAndAI/23")],
+        [InlineKeyboardButton("📝 טופס שיתוף אנונימי", url="https://oa379okv.forms.app/untitled-form")],
         [InlineKeyboardButton("📚 כל המדריכים", callback_data="show_guides_start")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
+    
     await update.message.reply_text(start_text, reply_markup=reply_markup)
 
 async def guides_command(update: Update, context) -> None:
@@ -140,13 +149,10 @@ async def button_callback(update: Update, context) -> None:
     await query.answer()
     data = query.data
 
-    if data.startswith("page:"):
+    if data.startswith("page:") or data.startswith("deletepage:"):
+        is_delete = data.startswith("deletepage:")
         page = int(data.split(":")[1])
-        text, keyboard = build_guides_paginator(page, for_delete=False)
-        if keyboard: await query.edit_message_text(text, reply_markup=keyboard, parse_mode='Markdown', disable_web_page_preview=True)
-    elif data.startswith("deletepage:"):
-        page = int(data.split(":")[1])
-        text, keyboard = build_guides_paginator(page, for_delete=True)
+        text, keyboard = build_guides_paginator(page, for_delete=is_delete)
         if keyboard: await query.edit_message_text(text, reply_markup=keyboard, parse_mode='Markdown', disable_web_page_preview=True)
     elif data.startswith("delete:"):
         guide_id_str = data.split(":")[1]

@@ -49,11 +49,11 @@ def save_guide_from_message(message: Message) -> str | None:
         logging.info(f"Message skipped (too short or no text).")
         return None
 
-    # --- THIS IS THE KEY FIX ---
-    # Check if the message is forwarded to get the *original* IDs
-    if message.forward_from_chat and message.forward_from_message_id:
-        original_chat_id = message.forward_from_chat.id
-        original_message_id = message.forward_from_message_id
+    # --- THIS IS THE FIX ---
+    # In modern PTB, forwarded message info is in the 'forward_origin' object
+    if message.forward_origin:
+        original_chat_id = message.forward_origin.chat.id
+        original_message_id = message.forward_origin.message_id
     else: # Otherwise, it's a new message in the channel
         original_chat_id = message.chat_id
         original_message_id = message.message_id
@@ -63,7 +63,7 @@ def save_guide_from_message(message: Message) -> str | None:
         parts = guide_text.strip().split('\n', 1)
         title = parts[0].strip()
     except Exception:
-        title = "Guide"
+        title = "Guide" # Fallback title
         
     guide_document = {
         "title": title,

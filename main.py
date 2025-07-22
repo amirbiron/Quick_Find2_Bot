@@ -12,7 +12,7 @@ from starlette.responses import Response
 # --- Imports for the Bot ---
 from telegram import Update, Message, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler, 
+    Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler,
     ChatMemberHandler, ContextTypes, ConversationHandler
 )
 from pymongo import MongoClient
@@ -83,18 +83,18 @@ def build_guides_paginator(page: int = 0, for_delete=False):
         for guide in guides:
             title = guide.get("title", "ללא כותרת")
             guide_id_str = str(guide["_id"])
-            message_text += f"🔹 {escape_markdown_v2(title)}\n\n" # Spaced out
+            message_text += f"🔹 {escape_markdown_v2(title)}\n\n"
             keyboard.append([
                 InlineKeyboardButton("מחק 🗑️", callback_data=f"delete:{guide_id_str}")
             ])
-    else: # The "less crowded" text-as-link view
+    else:
         message_text = "📖 *רשימת המדריכים הזמינים:*\n\n"
         for guide in guides:
             title = guide.get("title", "ללא כותרת")
             chat_id = guide.get("original_chat_id")
             msg_id = guide.get("original_message_id")
             link = f"https://t.me/c/{str(chat_id).replace('-100', '', 1)}/{msg_id}"
-            message_text += f"🔹 [{escape_markdown_v2(title)}]({link})\n\n" # Spaced out with an extra newline
+            message_text += f"🔹 [{escape_markdown_v2(title)}]({link})\n\n"
 
     nav_buttons = []
     callback_prefix = "deletepage" if for_delete else "page"
@@ -133,7 +133,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text(start_text, reply_markup=InlineKeyboardMarkup(inline_keyboard))
     await update.message.reply_text("השתמש בכפתור החיפוש למטה כדי למצוא מדריך ספציפי:", reply_markup=main_keyboard)
 
-
 async def guides_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text, keyboard = build_guides_paginator(0, for_delete=False)
     await update.message.reply_text(text, reply_markup=keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
@@ -162,7 +161,7 @@ async def perform_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         chat_id = guide.get("original_chat_id")
         msg_id = guide.get("original_message_id")
         link = f"https://t.me/c/{str(chat_id).replace('-100', '', 1)}/{msg_id}"
-        message += f"🔹 [{escape_markdown_v2(title)}]({link})\n\n" # Spaced out
+        message += f"🔹 [{escape_markdown_v2(title)}]({link})\n\n"
     await update.message.reply_text(message, reply_markup=main_keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
     return ConversationHandler.END
 
@@ -195,8 +194,15 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     elif data == "cancel_delete":
         await query.edit_message_text("👍 המחיקה בוטלה\.")
     elif data == "show_guides_start":
-        await query.message.reply_text("השתמש בפקודה /guides כדי לראות את המדריכים.")
-
+        # --- THIS IS THE FIX ---
+        text, keyboard = build_guides_paginator(0, for_delete=False)
+        await query.message.reply_text(
+            text, 
+            reply_markup=keyboard, 
+            parse_mode='MarkdownV2', 
+            disable_web_page_preview=True
+        )
+        # --- END OF FIX ---
 
 async def handle_new_guide_in_channel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.channel_post: save_guide_from_message(update.channel_post)

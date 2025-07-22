@@ -246,7 +246,7 @@ def main():
     
     # רישום handlers
     application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("מדריכים", guides_command))
+    application.add_handler(CommandHandler("guides", guides_command))
     application.add_handler(CommandHandler("guides", guides_command))  # גם באנגלית
     application.add_handler(CallbackQueryHandler(button_callback))
     

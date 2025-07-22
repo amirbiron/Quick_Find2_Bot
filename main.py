@@ -25,8 +25,8 @@ CHANNEL_ID = os.environ.get("CHANNEL_ID")
 ADMIN_ID = os.environ.get("ADMIN_ID")
 
 # --- Constants ---
-GUIDES_PER_PAGE = 7
-MAX_BUTTON_TEXT_LENGTH = 40 # A safe length for button text
+GUIDES_PER_PAGE = 5 # Reduced for better layout with more buttons
+MAX_BUTTON_TEXT_LENGTH = 40
 
 # --- Basic Setup & Database ---
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -74,15 +74,10 @@ def build_guides_paginator(page: int = 0, for_delete=False):
     keyboard = []
     for guide in guides:
         title = guide.get("title", "ללא כותרת")
-        
-        # --- THIS IS THE FIX ---
-        # Truncate the title if it's too long for a button
         if len(title.encode('utf-8')) > MAX_BUTTON_TEXT_LENGTH:
-            # A simple way to truncate while respecting character boundaries
             display_title = title[:25] + "..."
         else:
             display_title = title
-        # --- END OF FIX ---
             
         guide_id_str = str(guide["_id"])
         chat_id = guide.get("original_chat_id")
@@ -90,8 +85,13 @@ def build_guides_paginator(page: int = 0, for_delete=False):
         link = f"https://t.me/c/{str(chat_id).replace('-100', '', 1)}/{msg_id}"
 
         if for_delete:
+            # Row 1: Title
             keyboard.append([InlineKeyboardButton(display_title, url=link)])
-            keyboard.append([InlineKeyboardButton(f"מחק 🗑️", callback_data=f"delete:{guide_id_str}")])
+            # Row 2: Actions (View and Delete) - this will be full width
+            keyboard.append([
+                InlineKeyboardButton("צפה 👁️", url=link),
+                InlineKeyboardButton("מחק 🗑️", callback_data=f"delete:{guide_id_str}")
+            ])
         else:
             keyboard.append([InlineKeyboardButton(display_title, url=link)])
 
@@ -108,6 +108,7 @@ def build_guides_paginator(page: int = 0, for_delete=False):
 # Bot Handlers
 # =========================================================================
 async def start_command(update: Update, context) -> None:
+    # (The content of this function remains the same)
     user = update.effective_user
     users_collection.update_one({"user_id": user.id}, {"$set": {"first_name": user.first_name, "last_name": user.last_name}}, upsert=True)
     start_text = """
@@ -142,16 +143,17 @@ async def button_callback(update: Update, context) -> None:
     if data.startswith("page:"):
         page = int(data.split(":")[1])
         text, keyboard = build_guides_paginator(page, for_delete=False)
-        await query.edit_message_text(text, reply_markup=keyboard, parse_mode='Markdown', disable_web_page_preview=True)
+        if keyboard: await query.edit_message_text(text, reply_markup=keyboard, parse_mode='Markdown', disable_web_page_preview=True)
     elif data.startswith("deletepage:"):
         page = int(data.split(":")[1])
         text, keyboard = build_guides_paginator(page, for_delete=True)
-        await query.edit_message_text(text, reply_markup=keyboard, parse_mode='Markdown', disable_web_page_preview=True)
+        if keyboard: await query.edit_message_text(text, reply_markup=keyboard, parse_mode='Markdown', disable_web_page_preview=True)
     elif data.startswith("delete:"):
         guide_id_str = data.split(":")[1]
         guide = guides_collection.find_one({"_id": ObjectId(guide_id_str)})
         if guide:
-            text = f"❓ האם אתה בטוח שברצונך למחוק את המדריך '{guide['title'][:50]}...'?"
+            title_preview = guide.get('title', '')[:50]
+            text = f"❓ האם אתה בטוח שברצונך למחוק את המדריך '{title_preview}...'?"
             keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("✅ כן, מחק", callback_data=f"confirm_delete:{guide_id_str}"), InlineKeyboardButton("❌ לא, בטל", callback_data="cancel_delete")]])
             await query.edit_message_text(text, reply_markup=keyboard)
     elif data.startswith("confirm_delete:"):
@@ -185,6 +187,7 @@ ptb_application.add_handler(CallbackQueryHandler(button_callback))
 if CHANNEL_ID: ptb_application.add_handler(MessageHandler(filters.Chat(chat_id=int(CHANNEL_ID)) & ~filters.COMMAND & ~filters.POLL, handle_new_guide_in_channel))
 ptb_application.add_handler(MessageHandler(filters.FORWARDED & ~filters.POLL, handle_forwarded_guide))
 
+# ... (on_startup, on_shutdown, app, telegram_webhook functions remain the same)
 async def on_startup():
     await ptb_application.initialize()
     webhook_path = f"/{BOT_TOKEN.split(':')[-1]}"

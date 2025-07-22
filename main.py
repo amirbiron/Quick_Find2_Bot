@@ -27,6 +27,7 @@ ADMIN_ID = os.environ.get("ADMIN_ID")
 
 # --- Constants ---
 GUIDES_PER_PAGE = 7
+MAX_BUTTON_TEXT_LENGTH = 40
 
 # --- Basic Setup & Database ---
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -40,7 +41,6 @@ guides_collection = db.get_collection("guides")
 # Core Logic & Paginators
 # =========================================================================
 def escape_markdown_v2(text: str) -> str:
-    """Escapes characters for Telegram's MarkdownV2 parser."""
     escape_chars = r'_*[]()~`>#+-=|{}.!'
     return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
 
@@ -77,20 +77,27 @@ def build_guides_paginator(page: int = 0, for_delete=False):
         message_text = "🗑️ *בחר מדריך למחיקה:*\n\n"
         for guide in guides:
             title = guide.get("title", "ללא כותרת")
-            guide_id_str = str(guide["_id"])
             message_text += f"🔹 {escape_markdown_v2(title)}\n"
-            keyboard.append([
-                InlineKeyboardButton("מחק 🗑️", callback_data=f"delete:{guide_id_str}")
-            ])
-    else:
-        message_text = "📖 *רשימת המדריכים הזמינים:*\n\n"
-        for guide in guides:
-            title = guide.get("title", "ללא כותרת")
+            guide_id_str = str(guide["_id"])
             chat_id = guide.get("original_chat_id")
             msg_id = guide.get("original_message_id")
             link = f"https://t.me/c/{str(chat_id).replace('-100', '', 1)}/{msg_id}"
-            # The title itself is now the link in the message body
-            message_text += f"🔹 [{escape_markdown_v2(title)}]({link})\n"
+            keyboard.append([
+                InlineKeyboardButton("צפה 👁️", url=link),
+                InlineKeyboardButton("מחק 🗑️", callback_data=f"delete:{guide_id_str}")
+            ])
+    else: # Reverted to button-based layout for /guides
+        message_text = "📖 *רשימת המדריכים הזמינים:*"
+        for guide in guides:
+            title = guide.get("title", "ללא כותרת")
+            if len(title.encode('utf-8')) > MAX_BUTTON_TEXT_LENGTH:
+                display_title = title[:25] + "..."
+            else:
+                display_title = title
+            chat_id = guide.get("original_chat_id")
+            msg_id = guide.get("original_message_id")
+            link = f"https://t.me/c/{str(chat_id).replace('-100', '', 1)}/{msg_id}"
+            keyboard.append([InlineKeyboardButton(display_title, url=link)])
 
     nav_buttons = []
     callback_prefix = "deletepage" if for_delete else "page"
@@ -104,6 +111,26 @@ def build_guides_paginator(page: int = 0, for_delete=False):
 # =========================================================================
 # Bot Handlers
 # =========================================================================
+async def start_command(update: Update, context) -> None:
+    # ... (same as before)
+    pass
+async def guides_command(update: Update, context) -> None:
+    # ... (same as before)
+    pass
+async def delete_command(update: Update, context) -> None:
+    # ... (same as before)
+    pass
+async def button_callback(update: Update, context) -> None:
+    # ... (same as before)
+    pass
+async def handle_new_guide_in_channel(update: Update, context) -> None:
+    # ... (same as before)
+    pass
+async def handle_forwarded_guide(update: Update, context) -> None:
+    # ... (same as before)
+    pass
+
+# (Code from Bot Handlers down to the end of the file is restored here)
 async def start_command(update: Update, context) -> None:
     user = update.effective_user
     users_collection.update_one({"user_id": user.id}, {"$set": {"first_name": user.first_name, "last_name": user.last_name}}, upsert=True)

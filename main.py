@@ -12,7 +12,7 @@ from starlette.responses import Response
 # --- Imports for the Bot ---
 from telegram import Update, Message, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler, 
+    Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler,
     ChatMemberHandler, ContextTypes, ConversationHandler
 )
 from pymongo import MongoClient
@@ -29,7 +29,8 @@ CHANNEL_ID = os.environ.get("CHANNEL_ID")
 ADMIN_ID = os.environ.get("ADMIN_ID")
 
 # --- Constants ---
-GUIDES_PER_PAGE = 5
+GUIDES_PER_PAGE = 7
+MAX_BUTTON_TEXT_LENGTH = 40
 # States for ConversationHandler
 SEARCH_QUERY, EDIT_GUIDE_TITLE = range(2)
 
@@ -63,10 +64,9 @@ def save_guide_from_message(message: Message) -> str | None:
         title = "Guide"
     guide_document = {"title": title, "original_message_id": original_message_id, "original_chat_id": original_chat_id}
     guides_collection.update_one({"original_message_id": original_message_id, "original_chat_id": original_chat_id}, {"$set": guide_document}, upsert=True)
-    logging.info(f"Guide '{title}' saved from chat {original_chat_id}.")
     return title
 
-def build_guides_paginator(page: int = 0, mode='view'):
+def build_guides_paginator(page: int = 0, mode='view', user_id=None):
     guides_count = guides_collection.count_documents({})
     if guides_count == 0: return "לא נמצאו מדריכים במערכת.", None
 
@@ -75,36 +75,42 @@ def build_guides_paginator(page: int = 0, mode='view'):
     guides_to_skip = page * GUIDES_PER_PAGE
     guides = list(guides_collection.find().sort("original_message_id", 1).skip(guides_to_skip).limit(GUIDES_PER_PAGE))
     
-    message_text = ""
     keyboard = []
     
-    if mode == 'delete': message_text = "🗑️ *בחר מדריך למחיקה:*\n\n"
-    elif mode == 'edit': message_text = "✏️ *בחר מדריך לעריכה:*\n\n"
-    else: message_text = "📖 *רשימת המדריכים הזמינים:*\n\n"
+    if mode == 'delete':
+        message_text = "🗑️ *בחר מדריך למחיקה:*\n\n"
+        for guide in guides:
+            title = guide.get("title", "ללא כותרת")
+            message_text += f"🔹 {escape_markdown_v2(title)}\n"
+            guide_id_str = str(guide["_id"])
+            chat_id = guide.get("original_chat_id")
+            msg_id = guide.get("original_message_id")
+            link = f"https://t.me/c/{str(chat_id).replace('-100', '', 1)}/{msg_id}"
+            keyboard.append([
+                InlineKeyboardButton("צפה 👁️", url=link),
+                InlineKeyboardButton("מחק 🗑️", callback_data=f"delete:{guide_id_str}")
+            ])
+    else: # View mode (for /guides)
+        message_text = "📖 *רשימת המדריכים הזמינים:*"
+        is_admin = ADMIN_ID and str(user_id) == ADMIN_ID
+        for guide in guides:
+            title = guide.get("title", "ללא כותרת")
+            display_title = title
+            if len(title.encode('utf-8')) > MAX_BUTTON_TEXT_LENGTH:
+                display_title = title[:25] + "..."
+            
+            guide_id_str = str(guide["_id"])
+            chat_id = guide.get("original_chat_id")
+            msg_id = guide.get("original_message_id")
+            link = f"https://t.me/c/{str(chat_id).replace('-100', '', 1)}/{msg_id}"
 
-    for guide in guides:
-        title = guide.get("title", "ללא כותרת")
-        guide_id_str = str(guide["_id"])
-        chat_id = guide.get("original_chat_id")
-        msg_id = guide.get("original_message_id")
-        link = f"https://t.me/c/{str(chat_id).replace('-100', '', 1)}/{msg_id}"
-
-        message_text += f"🔹 {escape_markdown_v2(title)}\n"
-        
-        action_buttons = []
-        if mode == 'delete':
-            action_buttons.append(InlineKeyboardButton("מחק 🗑️", callback_data=f"delete:{guide_id_str}"))
-        elif mode == 'edit':
-            action_buttons.append(InlineKeyboardButton("ערוך ✏️", callback_data=f"edit:{guide_id_str}"))
-        
-        if mode != 'view':
-            action_buttons.insert(0, InlineKeyboardButton("צפה 👁️", url=link))
-            keyboard.append(action_buttons)
-        else:
-            message_text += f"   [קישור]({link})\n\n"
+            row = [InlineKeyboardButton(display_title, url=link)]
+            if is_admin: # If the user is an admin, add the edit button
+                row.append(InlineKeyboardButton("✏️", callback_data=f"edit:{guide_id_str}"))
+            keyboard.append(row)
 
     nav_buttons = []
-    callback_prefix = f"{mode}page"
+    callback_prefix = "viewpage" if mode == 'view' else "deletepage"
     if page > 0: nav_buttons.append(InlineKeyboardButton("◀️ הקודם", callback_data=f"{callback_prefix}:{page-1}"))
     nav_buttons.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="noop"))
     if page < total_pages - 1: nav_buttons.append(InlineKeyboardButton("הבא ▶️", callback_data=f"{callback_prefix}:{page+1}"))
@@ -137,28 +143,15 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text("השתמש בכפתור החיפוש למטה כדי למצוא מדריך ספציפי:", reply_markup=main_keyboard)
 
 async def guides_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    text, keyboard = build_guides_paginator(0, mode='view')
+    text, keyboard = build_guides_paginator(0, mode='view', user_id=update.effective_user.id)
     await update.message.reply_text(text, reply_markup=keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
 
 async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not ADMIN_ID or str(update.effective_user.id) != ADMIN_ID: return
-    text, keyboard = build_guides_paginator(0, mode='delete')
+    text, keyboard = build_guides_paginator(0, mode='delete', user_id=update.effective_user.id)
     await update.message.reply_text(text, reply_markup=keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
 
-async def edit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not ADMIN_ID or str(update.effective_user.id) != ADMIN_ID: return
-    text, keyboard = build_guides_paginator(0, mode='edit')
-    await update.message.reply_text(text, reply_markup=keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
-
-async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not ADMIN_ID or str(update.effective_user.id) != ADMIN_ID: return
-    loaded_channel_id = CHANNEL_ID
-    message = f"🔧 **Debug Info** 🔧\n\n**ADMIN_ID:** `{ADMIN_ID}`\n"
-    if loaded_channel_id: message += f"**CHANNEL_ID loaded:** `{loaded_channel_id}`\nThe bot is actively listening to this channel."
-    else: message += "**CHANNEL_ID:** Not set.\nThe bot is NOT listening to any channel."
-    await update.message.reply_text(message, parse_mode='Markdown')
-
-# --- Search Conversation ---
+# --- Conversation Handlers ---
 async def search_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("נא להזין את מונח החיפוש:")
     return SEARCH_QUERY
@@ -179,12 +172,6 @@ async def perform_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text(message, reply_markup=main_keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
     return ConversationHandler.END
 
-async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text('הפעולה בוטלה.', reply_markup=main_keyboard)
-    context.user_data.clear()
-    return ConversationHandler.END
-
-# --- Edit Conversation ---
 async def edit_guide_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
@@ -204,21 +191,21 @@ async def update_guide_title(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data.clear()
     return ConversationHandler.END
 
+async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text('הפעולה בוטלה.', reply_markup=main_keyboard)
+    context.user_data.clear()
+    return ConversationHandler.END
+
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     data = query.data
     if data == "noop": return
-    
-    # --- THIS IS THE FIX ---
-    if data.startswith("viewpage:") or data.startswith("deletepage:") or data.startswith("editpage:"):
-        mode = 'view'
-        if data.startswith("deletepage:"): mode = 'delete'
-        if data.startswith("editpage:"): mode = 'edit'
+    if data.startswith("viewpage:") or data.startswith("deletepage:"):
+        mode = 'view' if data.startswith("viewpage:") else 'delete'
         page = int(data.split(":")[1])
-        text, keyboard = build_guides_paginator(page, mode=mode)
+        text, keyboard = build_guides_paginator(page, mode=mode, user_id=query.from_user.id)
         if keyboard: await query.edit_message_text(text, reply_markup=keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
-
     elif data.startswith("delete:"):
         guide_id_str = data.split(":")[1]
         guide = guides_collection.find_one({"_id": ObjectId(guide_id_str)})
@@ -235,7 +222,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     elif data == "cancel_delete":
         await query.edit_message_text("👍 המחיקה בוטלה\.")
     elif data == "show_guides_start":
-        text, keyboard = build_guides_paginator(0, mode='view')
+        text, keyboard = build_guides_paginator(0, mode='view', user_id=query.from_user.id)
         await query.message.reply_text(text, reply_markup=keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
 
 async def handle_new_guide_in_channel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -267,8 +254,7 @@ ptb_application.add_handler(edit_conv_handler)
 ptb_application.add_handler(CommandHandler("start", start_command))
 ptb_application.add_handler(CommandHandler("guides", guides_command))
 ptb_application.add_handler(CommandHandler("delete", delete_command))
-ptb_application.add_handler(CommandHandler("edit", edit_command))
-ptb_application.add_handler(CommandHandler("debug", debug_command))
+# No more /edit command, it's integrated into /guides for admins
 ptb_application.add_handler(CallbackQueryHandler(button_callback))
 
 if CHANNEL_ID: ptb_application.add_handler(MessageHandler(filters.Chat(chat_id=int(CHANNEL_ID)) & ~filters.COMMAND & ~filters.POLL, handle_new_guide_in_channel))

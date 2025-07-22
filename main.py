@@ -30,7 +30,6 @@ ADMIN_ID = os.environ.get("ADMIN_ID")
 
 # --- Constants ---
 GUIDES_PER_PAGE = 7
-MAX_BUTTON_TEXT_LENGTH = 40
 # States for ConversationHandler
 SEARCH_QUERY, EDIT_GUIDE_TITLE = range(2)
 
@@ -46,6 +45,7 @@ guides_collection = db.get_collection("guides")
 # Helper Functions
 # =========================================================================
 def escape_markdown_v2(text: str) -> str:
+    """Escapes characters for Telegram's MarkdownV2 parser."""
     escape_chars = r'_*[]()~`>#+-=|{}.!'
     return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
 
@@ -66,7 +66,7 @@ def save_guide_from_message(message: Message) -> str | None:
     guides_collection.update_one({"original_message_id": original_message_id, "original_chat_id": original_chat_id}, {"$set": guide_document}, upsert=True)
     return title
 
-def build_guides_paginator(page: int = 0, mode='view', user_id=None):
+def build_guides_paginator(page: int = 0, for_admin=False):
     guides_count = guides_collection.count_documents({})
     if guides_count == 0: return "לא נמצאו מדריכים במערכת.", None
 
@@ -77,40 +77,29 @@ def build_guides_paginator(page: int = 0, mode='view', user_id=None):
     
     keyboard = []
     
-    if mode == 'delete':
-        message_text = "🗑️ *בחר מדריך למחיקה:*\n\n"
+    if for_admin:
+        message_text = "⚙️ *ניהול מדריכים:*\n\n"
         for guide in guides:
             title = guide.get("title", "ללא כותרת")
-            message_text += f"🔹 {escape_markdown_v2(title)}\n"
             guide_id_str = str(guide["_id"])
-            chat_id = guide.get("original_chat_id")
-            msg_id = guide.get("original_message_id")
-            link = f"https://t.me/c/{str(chat_id).replace('-100', '', 1)}/{msg_id}"
+            
+            message_text += f"🔹 {escape_markdown_v2(title)}\n"
+            
             keyboard.append([
-                InlineKeyboardButton("צפה 👁️", url=link),
+                InlineKeyboardButton("ערוך ✏️", callback_data=f"edit:{guide_id_str}"),
                 InlineKeyboardButton("מחק 🗑️", callback_data=f"delete:{guide_id_str}")
             ])
-    else: # View mode (for /guides)
-        message_text = "📖 *רשימת המדריכים הזמינים:*"
-        is_admin = ADMIN_ID and str(user_id) == ADMIN_ID
+    else: # View mode for regular users
+        message_text = "📖 *רשימת המדריכים הזמינים:*\n\n"
         for guide in guides:
             title = guide.get("title", "ללא כותרת")
-            display_title = title
-            if len(title.encode('utf-8')) > MAX_BUTTON_TEXT_LENGTH:
-                display_title = title[:25] + "..."
-            
-            guide_id_str = str(guide["_id"])
             chat_id = guide.get("original_chat_id")
             msg_id = guide.get("original_message_id")
             link = f"https://t.me/c/{str(chat_id).replace('-100', '', 1)}/{msg_id}"
-
-            row = [InlineKeyboardButton(display_title, url=link)]
-            if is_admin: # If the user is an admin, add the edit button
-                row.append(InlineKeyboardButton("✏️", callback_data=f"edit:{guide_id_str}"))
-            keyboard.append(row)
+            message_text += f"🔹 [{escape_markdown_v2(title)}]({link})\n"
 
     nav_buttons = []
-    callback_prefix = "viewpage" if mode == 'view' else "deletepage"
+    callback_prefix = "adminpage" if for_admin else "page"
     if page > 0: nav_buttons.append(InlineKeyboardButton("◀️ הקודם", callback_data=f"{callback_prefix}:{page-1}"))
     nav_buttons.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="noop"))
     if page < total_pages - 1: nav_buttons.append(InlineKeyboardButton("הבא ▶️", callback_data=f"{callback_prefix}:{page+1}"))
@@ -129,7 +118,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     start_text = """
 👋 שלום וברוך הבא לערוץ!
 אם זו הפעם הראשונה שלך פה – הכנתי לך ערכת התחלה מסודרת 🎁
-
 מה תמצא כאן?
 📌 מדריכים שימושיים בעברית
 🧰 כלים מומלצים (AI, מדריכים לאנדרואיד, בוטים)
@@ -143,15 +131,14 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text("השתמש בכפתור החיפוש למטה כדי למצוא מדריך ספציפי:", reply_markup=main_keyboard)
 
 async def guides_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    text, keyboard = build_guides_paginator(0, mode='view', user_id=update.effective_user.id)
+    text, keyboard = build_guides_paginator(0, for_admin=False)
     await update.message.reply_text(text, reply_markup=keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
 
-async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not ADMIN_ID or str(update.effective_user.id) != ADMIN_ID: return
-    text, keyboard = build_guides_paginator(0, mode='delete', user_id=update.effective_user.id)
+    text, keyboard = build_guides_paginator(0, for_admin=True)
     await update.message.reply_text(text, reply_markup=keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
 
-# --- Conversation Handlers ---
 async def search_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("נא להזין את מונח החיפוש:")
     return SEARCH_QUERY
@@ -168,7 +155,7 @@ async def perform_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         chat_id = guide.get("original_chat_id")
         msg_id = guide.get("original_message_id")
         link = f"https://t.me/c/{str(chat_id).replace('-100', '', 1)}/{msg_id}"
-        message += f"🔹 [{escape_markdown_v2(title)}]({link})\n\n"
+        message += f"🔹 [{escape_markdown_v2(title)}]({link})\n"
     await update.message.reply_text(message, reply_markup=main_keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
     return ConversationHandler.END
 
@@ -201,10 +188,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.answer()
     data = query.data
     if data == "noop": return
-    if data.startswith("viewpage:") or data.startswith("deletepage:"):
-        mode = 'view' if data.startswith("viewpage:") else 'delete'
-        page = int(data.split(":")[1])
-        text, keyboard = build_guides_paginator(page, mode=mode, user_id=query.from_user.id)
+    if "page:" in data:
+        mode_str, page_str = data.split("page:")
+        is_admin = mode_str == "admin"
+        page = int(page_str)
+        text, keyboard = build_guides_paginator(page, for_admin=is_admin)
         if keyboard: await query.edit_message_text(text, reply_markup=keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
     elif data.startswith("delete:"):
         guide_id_str = data.split(":")[1]
@@ -222,7 +210,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     elif data == "cancel_delete":
         await query.edit_message_text("👍 המחיקה בוטלה\.")
     elif data == "show_guides_start":
-        text, keyboard = build_guides_paginator(0, mode='view', user_id=query.from_user.id)
+        text, keyboard = build_guides_paginator(0, for_admin=False)
         await query.message.reply_text(text, reply_markup=keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
 
 async def handle_new_guide_in_channel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -237,24 +225,14 @@ async def handle_forwarded_guide(update: Update, context: ContextTypes.DEFAULT_T
 # =========================================================================
 ptb_application = Application.builder().token(BOT_TOKEN).build()
 
-# Conversation Handlers
-search_conv_handler = ConversationHandler(
-    entry_points=[MessageHandler(filters.Regex('^חיפוש 🔍$'), search_start)],
-    states={SEARCH_QUERY: [MessageHandler(filters.TEXT & ~filters.COMMAND, perform_search)]},
-    fallbacks=[CommandHandler('cancel', cancel_conversation)],
-)
-edit_conv_handler = ConversationHandler(
-    entry_points=[CallbackQueryHandler(edit_guide_start, pattern="^edit:")],
-    states={EDIT_GUIDE_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, update_guide_title)]},
-    fallbacks=[CommandHandler('cancel', cancel_conversation)],
-)
+search_conv_handler = ConversationHandler(entry_points=[MessageHandler(filters.Regex('^חיפוש 🔍$'), search_start)], states={SEARCH_QUERY: [MessageHandler(filters.TEXT & ~filters.COMMAND, perform_search)]}, fallbacks=[CommandHandler('cancel', cancel_conversation)])
+edit_conv_handler = ConversationHandler(entry_points=[CallbackQueryHandler(edit_guide_start, pattern="^edit:")], states={EDIT_GUIDE_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, update_guide_title)]}, fallbacks=[CommandHandler('cancel', cancel_conversation)])
 
 ptb_application.add_handler(search_conv_handler)
 ptb_application.add_handler(edit_conv_handler)
 ptb_application.add_handler(CommandHandler("start", start_command))
 ptb_application.add_handler(CommandHandler("guides", guides_command))
-ptb_application.add_handler(CommandHandler("delete", delete_command))
-# No more /edit command, it's integrated into /guides for admins
+ptb_application.add_handler(CommandHandler("admin", admin_command)) # Replaces /delete and /edit
 ptb_application.add_handler(CallbackQueryHandler(button_callback))
 
 if CHANNEL_ID: ptb_application.add_handler(MessageHandler(filters.Chat(chat_id=int(CHANNEL_ID)) & ~filters.COMMAND & ~filters.POLL, handle_new_guide_in_channel))

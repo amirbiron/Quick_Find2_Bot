@@ -62,6 +62,7 @@ def save_guide_from_message(message: Message) -> str | None:
         title = "Guide"
     guide_document = {"title": title, "original_message_id": original_message_id, "original_chat_id": original_chat_id}
     guides_collection.update_one({"original_message_id": original_message_id, "original_chat_id": original_chat_id}, {"$set": guide_document}, upsert=True)
+    logging.info(f"Guide '{title}' saved from chat {original_chat_id}.")
     return title
 
 def build_guides_paginator(page: int = 0, for_delete=False):
@@ -104,16 +105,30 @@ def build_guides_paginator(page: int = 0, for_delete=False):
 # =========================================================================
 # Bot Handlers
 # =========================================================================
-async def log_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Diagnostic function to log every update the bot receives."""
-    logging.info(f"--- RECEIVED UPDATE ---\n{update.to_json()}\n--- END UPDATE ---")
-
 main_keyboard = ReplyKeyboardMarkup([["חיפוש 🔍"]], resize_keyboard=True)
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     users_collection.update_one({"user_id": user.id}, {"$set": {"first_name": user.first_name, "last_name": user.last_name}}, upsert=True)
-    await update.message.reply_text("👋 ברוך הבא!", reply_markup=main_keyboard)
+    start_text = """
+👋 שלום וברוך הבא לערוץ!
+אם זו הפעם הראשונה שלך פה – הכנתי לך ערכת התחלה מסודרת 🎁
+מה תמצא כאן?
+📌 מדריכים שימושיים בעברית
+🧰 כלים מומלצים (AI, מדריכים לאנדרואיד, בוטים)
+💡 רעיונות לפרויקטים אמיתיים
+📥 טופס לשיתוף אנונימי של כלים או מחשבות
+בחר מה שתרצה מתוך הכפתורים למטה ⬇️
+"""
+    inline_keyboard = [
+        [InlineKeyboardButton("🧹 מדריך ניקוי מטמון (סמסונג)", url="https://t.me/AndroidAndAI/17")],
+        [InlineKeyboardButton("🧠 מה ChatGPT באמת זוכר עליכם?", url="https://t.me/AndroidAndAI/20")],
+        [InlineKeyboardButton("💸 טריק להנחה ל-GPT", url="https://t.me/AndroidAndAI/23")],
+        [InlineKeyboardButton("📝 טופס שיתוף אנונימי", url="https://oa379okv.forms.app/untitled-form")],
+        [InlineKeyboardButton("📚 כל המדריכים", callback_data="show_guides_start")]
+    ]
+    await update.message.reply_text(start_text, reply_markup=InlineKeyboardMarkup(inline_keyboard))
+    await update.message.reply_text("השתמש בכפתור החיפוש למטה כדי למצוא מדריך ספציפי:", reply_markup=main_keyboard)
 
 async def guides_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text, keyboard = build_guides_paginator(0, for_delete=False)
@@ -134,7 +149,7 @@ async def perform_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     query = update.message.text
     results = list(guides_collection.find({"title": {"$regex": query, "$options": "i"}}))
     if not results:
-        await update.message.reply_text("לא נמצאו מדריכים תואמים.", reply_markup=main_keyboard)
+        await update.message.reply_text(f"לא נמצאו מדריכים התואמים לחיפוש.", reply_markup=main_keyboard)
         return ConversationHandler.END
     message = f"🔍 *תוצאות חיפוש עבור '{escape_markdown_v2(query)}':*\n\n"
     for guide in results:
@@ -175,7 +190,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         else: await query.edit_message_text("שגיאה: המדריך לא נמצא\.")
     elif data == "cancel_delete":
         await query.edit_message_text("👍 המחיקה בוטלה\.")
-    
+    elif data == "show_guides_start":
+        text, keyboard = build_guides_paginator(0, for_delete=False)
+        await query.message.reply_text(text, reply_markup=keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
+
 async def handle_new_guide_in_channel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.channel_post: save_guide_from_message(update.channel_post)
 
@@ -188,9 +206,6 @@ async def handle_forwarded_guide(update: Update, context: ContextTypes.DEFAULT_T
 # Application Setup & Web Server
 # =========================================================================
 ptb_application = Application.builder().token(BOT_TOKEN).build()
-
-ptb_application.add_handler(MessageHandler(filters.ALL, log_all_updates), group=-1)
-
 search_conv_handler = ConversationHandler(
     entry_points=[MessageHandler(filters.Regex('^חיפוש 🔍$'), search_start)],
     states={ SEARCH_QUERY: [MessageHandler(filters.TEXT & ~filters.COMMAND, perform_search)] },

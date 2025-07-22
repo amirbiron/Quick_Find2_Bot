@@ -37,7 +37,6 @@ except Exception as e:
 # =========================================================================
 # Your Bot's Functions (start_command, guides_command, etc.)
 # =========================================================================
-# כאן נמצאות הפונקציות המקוריות של הבוט שלך
 async def start_command(update: Update, context) -> None:
     user = update.effective_user
     users_collection.update_one(
@@ -48,7 +47,29 @@ async def start_command(update: Update, context) -> None:
     await update.message.reply_text("ברוך הבא לבוט המדריכים!")
 
 async def guides_command(update: Update, context) -> None:
-    await update.message.reply_text("זוהי רשימת המדריכים:")
+    """Sends a list of all guides from the database."""
+    try:
+        all_guides = guides_collection.find()
+        guides_list = list(all_guides) # Convert cursor to list to check its length
+
+        if not guides_list:
+            await update.message.reply_text("לא נמצאו מדריכים במערכת.")
+            return
+
+        # Format the message
+        message = "📖 *רשימת המדריכים הזמינים:*\n\n"
+        for guide in guides_list:
+            # Assuming each guide has a 'title' and 'description' field
+            title = guide.get("title", "ללא כותרת")
+            description = guide.get("description", "אין תיאור")
+            message += f"🔹 *{title}* - {description}\n"
+
+        # Send the formatted message
+        await update.message.reply_text(message, parse_mode='Markdown')
+
+    except Exception as e:
+        logging.error(f"Error fetching guides: {e}")
+        await update.message.reply_text("אירעה שגיאה בעת שליפת המדריכים.")
 
 async def button_callback(update: Update, context) -> None:
     pass # Your logic here

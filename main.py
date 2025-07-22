@@ -66,7 +66,7 @@ def save_guide_from_message(message: Message) -> str | None:
     logging.info(f"Guide '{title}' saved from chat {original_chat_id}.")
     return title
 
-def build_guides_paginator(page: int = 0, mode='view'): # mode can be 'view', 'delete', 'edit'
+def build_guides_paginator(page: int = 0, mode='view'):
     guides_count = guides_collection.count_documents({})
     if guides_count == 0: return "לא נמצאו מדריכים במערכת.", None
 
@@ -103,7 +103,6 @@ def build_guides_paginator(page: int = 0, mode='view'): # mode can be 'view', 'd
         else:
             message_text += f"   [קישור]({link})\n\n"
 
-
     nav_buttons = []
     callback_prefix = f"{mode}page"
     if page > 0: nav_buttons.append(InlineKeyboardButton("◀️ הקודם", callback_data=f"{callback_prefix}:{page-1}"))
@@ -119,8 +118,23 @@ def build_guides_paginator(page: int = 0, mode='view'): # mode can be 'view', 'd
 main_keyboard = ReplyKeyboardMarkup([["חיפוש 🔍"]], resize_keyboard=True)
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # ... (code is unchanged)
-    pass
+    user = update.effective_user
+    users_collection.update_one({"user_id": user.id}, {"$set": {"first_name": user.first_name, "last_name": user.last_name}}, upsert=True)
+    start_text = """
+👋 שלום וברוך הבא לערוץ!
+אם זו הפעם הראשונה שלך פה – הכנתי לך ערכת התחלה מסודרת 🎁
+
+מה תמצא כאן?
+📌 מדריכים שימושיים בעברית
+🧰 כלים מומלצים (AI, מדריכים לאנדרואיד, בוטים)
+💡 רעיונות לפרויקטים אמיתיים
+📥 טופס לשיתוף אנונימי של כלים או מחשבות
+
+בחר מה שתרצה מתוך הכפתורים למטה ⬇️
+"""
+    inline_keyboard = [[InlineKeyboardButton("🧹 מדריך ניקוי מטמון (סמסונג)", url="https://t.me/AndroidAndAI/17")], [InlineKeyboardButton("🧠 מה ChatGPT באמת זוכר עליכם?", url="https://t.me/AndroidAndAI/20")], [InlineKeyboardButton("💸 טריק להנחה ל-GPT", url="https://t.me/AndroidAndAI/23")], [InlineKeyboardButton("📝 טופס שיתוף אנונימי", url="https://oa379okv.forms.app/untitled-form")], [InlineKeyboardButton("📚 כל המדריכים", callback_data="show_guides_start")]]
+    await update.message.reply_text(start_text, reply_markup=InlineKeyboardMarkup(inline_keyboard))
+    await update.message.reply_text("השתמש בכפתור החיפוש למטה כדי למצוא מדריך ספציפי:", reply_markup=main_keyboard)
 
 async def guides_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text, keyboard = build_guides_paginator(0, mode='view')
@@ -137,8 +151,12 @@ async def edit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(text, reply_markup=keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
 
 async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # ... (code is unchanged)
-    pass
+    if not ADMIN_ID or str(update.effective_user.id) != ADMIN_ID: return
+    loaded_channel_id = CHANNEL_ID
+    message = f"🔧 **Debug Info** 🔧\n\n**ADMIN_ID:** `{ADMIN_ID}`\n"
+    if loaded_channel_id: message += f"**CHANNEL_ID loaded:** `{loaded_channel_id}`\nThe bot is actively listening to this channel."
+    else: message += "**CHANNEL_ID:** Not set.\nThe bot is NOT listening to any channel."
+    await update.message.reply_text(message, parse_mode='Markdown')
 
 # --- Search Conversation ---
 async def search_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -146,8 +164,20 @@ async def search_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     return SEARCH_QUERY
 
 async def perform_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (code is unchanged)
-    pass
+    query = update.message.text
+    results = list(guides_collection.find({"title": {"$regex": query, "$options": "i"}}))
+    if not results:
+        await update.message.reply_text(f"לא נמצאו מדריכים התואמים לחיפוש.", reply_markup=main_keyboard)
+        return ConversationHandler.END
+    message = f"🔍 *תוצאות חיפוש עבור '{escape_markdown_v2(query)}':*\n\n"
+    for guide in results:
+        title = guide.get("title", "ללא כותרת")
+        chat_id = guide.get("original_chat_id")
+        msg_id = guide.get("original_message_id")
+        link = f"https://t.me/c/{str(chat_id).replace('-100', '', 1)}/{msg_id}"
+        message += f"🔹 [{escape_markdown_v2(title)}]({link})\n\n"
+    await update.message.reply_text(message, reply_markup=main_keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
+    return ConversationHandler.END
 
 async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text('הפעולה בוטלה.', reply_markup=main_keyboard)
@@ -169,59 +199,9 @@ async def update_guide_title(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not guide_id_str:
         await update.message.reply_text("שגיאה, לא נמצא מדריך לעריכה.", reply_markup=main_keyboard)
         return ConversationHandler.END
-
-    guides_collection.update_one(
-        {"_id": ObjectId(guide_id_str)},
-        {"$set": {"title": new_title}}
-    )
+    guides_collection.update_one({"_id": ObjectId(guide_id_str)}, {"$set": {"title": new_title}})
     await update.message.reply_text(f"✅ השם עודכן בהצלחה ל: '{new_title}'", reply_markup=main_keyboard)
     context.user_data.clear()
-    return ConversationHandler.END
-
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # ... (code is unchanged, but will be replaced by the full version below)
-    pass
-
-async def handle_new_guide_in_channel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # ... (code is unchanged)
-    pass
-async def handle_forwarded_guide(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # ... (code is unchanged)
-    pass
-
-# (Full code for all functions is restored below)
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = update.effective_user
-    users_collection.update_one({"user_id": user.id}, {"$set": {"first_name": user.first_name, "last_name": user.last_name}}, upsert=True)
-    start_text = """
-👋 שלום וברוך הבא לערוץ!
-אם זו הפעם הראשונה שלך פה – הכנתי לך ערכת התחלה מסודרת 🎁
-מה תמצא כאן?
-📌 מדריכים שימושיים בעברית
-🧰 כלים מומלצים (AI, מדריכים לאנדרואיד, בוטים)
-💡 רעיונות לפרויקטים אמיתיים
-📥 טופס לשיתוף אנונימי של כלים או מחשבות
-
-בחר מה שתרצה מתוך הכפתורים למטה ⬇️
-"""
-    inline_keyboard = [[InlineKeyboardButton("🧹 מדריך ניקוי מטמון (סמסונג)", url="https://t.me/AndroidAndAI/17")], [InlineKeyboardButton("🧠 מה ChatGPT באמת זוכר עליכם?", url="https://t.me/AndroidAndAI/20")], [InlineKeyboardButton("💸 טריק להנחה ל-GPT", url="https://t.me/AndroidAndAI/23")], [InlineKeyboardButton("📝 טופס שיתוף אנונימי", url="https://oa379okv.forms.app/untitled-form")], [InlineKeyboardButton("📚 כל המדריכים", callback_data="show_guides_start")]]
-    await update.message.reply_text(start_text, reply_markup=InlineKeyboardMarkup(inline_keyboard))
-    await update.message.reply_text("השתמש בכפתור החיפוש למטה כדי למצוא מדריך ספציפי:", reply_markup=main_keyboard)
-
-async def perform_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.message.text
-    results = list(guides_collection.find({"title": {"$regex": query, "$options": "i"}}))
-    if not results:
-        await update.message.reply_text(f"לא נמצאו מדריכים התואמים לחיפוש.", reply_markup=main_keyboard)
-        return ConversationHandler.END
-    message = f"🔍 *תוצאות חיפוש עבור '{escape_markdown_v2(query)}':*\n\n"
-    for guide in results:
-        title = guide.get("title", "ללא כותרת")
-        chat_id = guide.get("original_chat_id")
-        msg_id = guide.get("original_message_id")
-        link = f"https://t.me/c/{str(chat_id).replace('-100', '', 1)}/{msg_id}"
-        message += f"🔹 [{escape_markdown_v2(title)}]({link})\n\n"
-    await update.message.reply_text(message, reply_markup=main_keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
     return ConversationHandler.END
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -229,13 +209,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.answer()
     data = query.data
     if data == "noop": return
-    if data.startswith("page:") or data.startswith("deletepage:") or data.startswith("editpage:"):
+    
+    # --- THIS IS THE FIX ---
+    if data.startswith("viewpage:") or data.startswith("deletepage:") or data.startswith("editpage:"):
         mode = 'view'
         if data.startswith("deletepage:"): mode = 'delete'
         if data.startswith("editpage:"): mode = 'edit'
         page = int(data.split(":")[1])
         text, keyboard = build_guides_paginator(page, mode=mode)
         if keyboard: await query.edit_message_text(text, reply_markup=keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
+
     elif data.startswith("delete:"):
         guide_id_str = data.split(":")[1]
         guide = guides_collection.find_one({"_id": ObjectId(guide_id_str)})
@@ -261,13 +244,6 @@ async def handle_forwarded_guide(update: Update, context: ContextTypes.DEFAULT_T
     saved_title = save_guide_from_message(update.message)
     if saved_title: await update.message.reply_text(f"✅ המדריך '{escape_markdown_v2(saved_title)}' נשמר/עודכן בהצלחה\!", parse_mode='MarkdownV2')
     else: await update.message.reply_text("לא ניתן היה לשמור את ההודעה\.")
-async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not ADMIN_ID or str(update.effective_user.id) != ADMIN_ID: return
-    loaded_channel_id = CHANNEL_ID
-    message = f"🔧 **Debug Info** 🔧\n\n**ADMIN_ID:** `{ADMIN_ID}`\n"
-    if loaded_channel_id: message += f"**CHANNEL_ID loaded:** `{loaded_channel_id}`\nThe bot is actively listening to this channel."
-    else: message += "**CHANNEL_ID:** Not set.\nThe bot is NOT listening to any channel."
-    await update.message.reply_text(message, parse_mode='Markdown')
 
 # =========================================================================
 # Application Setup & Web Server

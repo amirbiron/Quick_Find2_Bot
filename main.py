@@ -118,6 +118,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 🧰 כלים מומלצים (AI, מדריכים לאנדרואיד, בוטים)
 💡 רעיונות לפרויקטים אמיתיים
 📥 טופס לשיתוף אנונימי של כלים או מחשבות
+
 בחר מה שתרצה מתוך הכפתורים למטה ⬇️
 """
     inline_keyboard = [
@@ -140,6 +141,25 @@ async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     text, keyboard = build_guides_paginator(0, for_delete=True)
     await update.message.reply_text(text, reply_markup=keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
+
+async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin command to check environment variables."""
+    if not ADMIN_ID or str(update.effective_user.id) != ADMIN_ID:
+        await update.message.reply_text("⛔ אין לך הרשאה.")
+        return
+    
+    loaded_channel_id = CHANNEL_ID
+    message = f"🔧 **Debug Info** 🔧\n\n"
+    message += f"**ADMIN_ID:** `{ADMIN_ID}`\n"
+    if loaded_channel_id:
+        message += f"**CHANNEL_ID loaded:** `{loaded_channel_id}`\n"
+        message += "The bot is actively listening to this channel."
+    else:
+        message += "**CHANNEL_ID:** Not set or not found.\n"
+        message += "The bot is NOT listening to any channel."
+        
+    await update.message.reply_text(message, parse_mode='Markdown')
+
 
 async def search_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("נא להזין את מונח החיפוש:")
@@ -215,9 +235,11 @@ ptb_application.add_handler(search_conv_handler)
 ptb_application.add_handler(CommandHandler("start", start_command))
 ptb_application.add_handler(CommandHandler("guides", guides_command))
 ptb_application.add_handler(CommandHandler("delete", delete_command))
+ptb_application.add_handler(CommandHandler("debug", debug_command)) # The new debug command
 ptb_application.add_handler(CallbackQueryHandler(button_callback))
 
-if CHANNEL_ID: ptb_application.add_handler(MessageHandler(filters.Chat(chat_id=int(CHANNEL_ID)) & ~filters.COMMAND & ~filters.POLL, handle_new_guide_in_channel))
+if CHANNEL_ID: 
+    ptb_application.add_handler(MessageHandler(filters.Chat(chat_id=int(CHANNEL_ID)) & ~filters.COMMAND & ~filters.POLL, handle_new_guide_in_channel))
 ptb_application.add_handler(MessageHandler(filters.FORWARDED & ~filters.POLL, handle_forwarded_guide))
 
 async def on_startup():

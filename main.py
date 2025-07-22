@@ -12,7 +12,7 @@ from starlette.responses import Response
 from telegram import Update, Message, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler, ChatMemberHandler
 from pymongo import MongoClient
-from bson.objectid import ObjectId # Important for deleting by ID
+from bson.objectid import ObjectId
 
 # --- Load Environment Variables ---
 from dotenv import load_dotenv
@@ -26,6 +26,7 @@ ADMIN_ID = os.environ.get("ADMIN_ID")
 
 # --- Constants ---
 GUIDES_PER_PAGE = 7
+MAX_BUTTON_TEXT_LENGTH = 40 # A safe length for button text
 
 # --- Basic Setup & Database ---
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -66,25 +67,33 @@ def build_guides_paginator(page: int = 0, for_delete=False):
     guides_to_skip = page * GUIDES_PER_PAGE
     guides = list(guides_collection.find().sort("original_message_id", 1).skip(guides_to_skip).limit(GUIDES_PER_PAGE))
     
-    message_text = "📖 *רשימת המדריכים הזמינים:*\n\n"
+    message_text = "📖 *רשימת המדריכים הזמינים:*\n"
     if for_delete:
-        message_text = "🗑️ *בחר מדריך למחיקה:*\n\n"
+        message_text = "🗑️ *בחר מדריך למחיקה:*\n"
     
     keyboard = []
     for guide in guides:
         title = guide.get("title", "ללא כותרת")
-        guide_id_str = str(guide["_id"])
         
-        row = []
-        if for_delete:
-            row.append(InlineKeyboardButton(f"מחק 🗑️", callback_data=f"delete:{guide_id_str}"))
-            row.append(InlineKeyboardButton(title, callback_data="noop")) # Just for text
+        # --- THIS IS THE FIX ---
+        # Truncate the title if it's too long for a button
+        if len(title.encode('utf-8')) > MAX_BUTTON_TEXT_LENGTH:
+            # A simple way to truncate while respecting character boundaries
+            display_title = title[:25] + "..."
         else:
-            chat_id = guide.get("original_chat_id")
-            msg_id = guide.get("original_message_id")
-            link = f"https://t.me/c/{str(chat_id).replace('-100', '', 1)}/{msg_id}"
-            row.append(InlineKeyboardButton(title, url=link))
-        keyboard.append(row)
+            display_title = title
+        # --- END OF FIX ---
+            
+        guide_id_str = str(guide["_id"])
+        chat_id = guide.get("original_chat_id")
+        msg_id = guide.get("original_message_id")
+        link = f"https://t.me/c/{str(chat_id).replace('-100', '', 1)}/{msg_id}"
+
+        if for_delete:
+            keyboard.append([InlineKeyboardButton(display_title, url=link)])
+            keyboard.append([InlineKeyboardButton(f"מחק 🗑️", callback_data=f"delete:{guide_id_str}")])
+        else:
+            keyboard.append([InlineKeyboardButton(display_title, url=link)])
 
     nav_buttons = []
     callback_prefix = "deletepage" if for_delete else "page"
@@ -101,26 +110,17 @@ def build_guides_paginator(page: int = 0, for_delete=False):
 async def start_command(update: Update, context) -> None:
     user = update.effective_user
     users_collection.update_one({"user_id": user.id}, {"$set": {"first_name": user.first_name, "last_name": user.last_name}}, upsert=True)
-    
     start_text = """
 👋 שלום וברוך הבא לערוץ!
 אם זו הפעם הראשונה שלך פה – הכנתי לך ערכת התחלה מסודרת 🎁
-מה תמצא כאן?
-📌 מדריכים שימושיים בעברית
-🧰 כלים מומלצים (AI, מדריכים לאנדרואיד, בוטים)
-💡 רעיונות לפרויקטים אמיתיים
-📥 טופס לשיתוף אנונימי של כלים או מחשבות
 בחר מה שתרצה מתוך הכפתורים למטה ⬇️
 """
     keyboard = [
         [InlineKeyboardButton("🧹 מדריך ניקוי מטמון (סמסונג)", url="https://t.me/AndroidAndAI/17")],
         [InlineKeyboardButton("🧠 מה ChatGPT באמת זוכר עליכם?", url="https://t.me/AndroidAndAI/20")],
-        [InlineKeyboardButton("💸 טריק להנחה ל-GPT", url="https://t.me/AndroidAndAI/23")],
-        [InlineKeyboardButton("📝 טופס שיתוף אנונימי", url="https://oa379okv.forms.app/untitled-form")],
         [InlineKeyboardButton("📚 כל המדריכים", callback_data="show_guides_start")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
     await update.message.reply_text(start_text, reply_markup=reply_markup)
 
 async def guides_command(update: Update, context) -> None:
@@ -128,7 +128,7 @@ async def guides_command(update: Update, context) -> None:
     await update.message.reply_text(text, reply_markup=keyboard, parse_mode='Markdown', disable_web_page_preview=True)
 
 async def delete_command(update: Update, context) -> None:
-    if str(update.effective_user.id) != ADMIN_ID:
+    if not ADMIN_ID or str(update.effective_user.id) != ADMIN_ID:
         await update.message.reply_text("⛔ אין לך הרשאה לבצע פעולה זו.")
         return
     text, keyboard = build_guides_paginator(0, for_delete=True)
@@ -143,47 +143,35 @@ async def button_callback(update: Update, context) -> None:
         page = int(data.split(":")[1])
         text, keyboard = build_guides_paginator(page, for_delete=False)
         await query.edit_message_text(text, reply_markup=keyboard, parse_mode='Markdown', disable_web_page_preview=True)
-    
     elif data.startswith("deletepage:"):
         page = int(data.split(":")[1])
         text, keyboard = build_guides_paginator(page, for_delete=True)
         await query.edit_message_text(text, reply_markup=keyboard, parse_mode='Markdown', disable_web_page_preview=True)
-
     elif data.startswith("delete:"):
         guide_id_str = data.split(":")[1]
         guide = guides_collection.find_one({"_id": ObjectId(guide_id_str)})
         if guide:
-            text = f"❓ האם אתה בטוח שברצונך למחוק את המדריך '{guide['title']}'?"
-            keyboard = InlineKeyboardMarkup([[
-                InlineKeyboardButton("✅ כן, מחק", callback_data=f"confirm_delete:{guide_id_str}"),
-                InlineKeyboardButton("❌ לא, בטל", callback_data="cancel_delete")]])
+            text = f"❓ האם אתה בטוח שברצונך למחוק את המדריך '{guide['title'][:50]}...'?"
+            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("✅ כן, מחק", callback_data=f"confirm_delete:{guide_id_str}"), InlineKeyboardButton("❌ לא, בטל", callback_data="cancel_delete")]])
             await query.edit_message_text(text, reply_markup=keyboard)
-
     elif data.startswith("confirm_delete:"):
         guide_id_str = data.split(":")[1]
         result = guides_collection.delete_one({"_id": ObjectId(guide_id_str)})
-        if result.deleted_count > 0:
-            await query.edit_message_text("🗑️ המדריך נמחק בהצלחה.")
-        else:
-            await query.edit_message_text("שגיאה: המדריך לא נמצא (אולי כבר נמחק).")
-
+        if result.deleted_count > 0: await query.edit_message_text("🗑️ המדריך נמחק בהצלחה.")
+        else: await query.edit_message_text("שגיאה: המדריך לא נמצא.")
     elif data == "cancel_delete":
         await query.edit_message_text("👍 המחיקה בוטלה.")
-    
     elif data == "show_guides_start":
         text, keyboard = build_guides_paginator(0, for_delete=False)
         await query.message.reply_text(text, reply_markup=keyboard, parse_mode='Markdown', disable_web_page_preview=True)
 
 async def handle_new_guide_in_channel(update: Update, context) -> None:
-    if update.channel_post:
-        save_guide_from_message(update.channel_post)
+    if update.channel_post: save_guide_from_message(update.channel_post)
 
 async def handle_forwarded_guide(update: Update, context) -> None:
     saved_title = save_guide_from_message(update.message)
-    if saved_title:
-        await update.message.reply_text(f"✅ המדריך '{saved_title}' נשמר/עודכן בהצלחה!")
-    else:
-        await update.message.reply_text("לא ניתן היה לשמור את ההודעה (כנראה שהיא קצרה מדי).")
+    if saved_title: await update.message.reply_text(f"✅ המדריך '{saved_title}' נשמר/עודכן בהצלחה!")
+    else: await update.message.reply_text("לא ניתן היה לשמור את ההודעה.")
 
 # =========================================================================
 # Application Setup & Web Server
@@ -194,9 +182,7 @@ ptb_application.add_handler(CommandHandler("guides", guides_command))
 ptb_application.add_handler(CommandHandler("delete", delete_command))
 ptb_application.add_handler(CallbackQueryHandler(button_callback))
 
-if CHANNEL_ID:
-    ptb_application.add_handler(MessageHandler(filters.Chat(chat_id=int(CHANNEL_ID)) & ~filters.COMMAND & ~filters.POLL, handle_new_guide_in_channel))
-
+if CHANNEL_ID: ptb_application.add_handler(MessageHandler(filters.Chat(chat_id=int(CHANNEL_ID)) & ~filters.COMMAND & ~filters.POLL, handle_new_guide_in_channel))
 ptb_application.add_handler(MessageHandler(filters.FORWARDED & ~filters.POLL, handle_forwarded_guide))
 
 async def on_startup():

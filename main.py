@@ -3,6 +3,10 @@ import os
 import asyncio
 import math
 import re
+import traceback
+import html
+
+from datetime import datetime, timedelta
 
 # --- Imports for the Web Server ---
 from starlette.applications import Starlette
@@ -11,6 +15,7 @@ from starlette.responses import Response
 
 # --- Imports for the Bot ---
 from telegram import Update, Message, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
+from telegram.constants import ParseMode
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler,
     ChatMemberHandler, ContextTypes, ConversationHandler
@@ -36,6 +41,8 @@ SEARCH_QUERY, EDIT_GUIDE_TITLE = range(2)
 # --- Basic Setup & Database ---
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
+logger = logging.getLogger(__name__)
+
 client = MongoClient(MONGO_URI)
 db = client.get_database("QuickFind2BotDB")
 users_collection = db.get_collection("users")
@@ -48,6 +55,19 @@ def escape_markdown_v2(text: str) -> str:
     """Escapes characters for Telegram's MarkdownV2 parser."""
     escape_chars = r'_*[]()~`>#+-=|{}.!'
     return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
+
+def update_user_activity(user):
+    """Updates the user's details and last_seen timestamp in the database."""
+    if user:
+        users_collection.update_one(
+            {"user_id": user.id},
+            {"$set": {
+                "first_name": user.first_name,
+                "last_name": user.last_name,
+                "last_seen": datetime.utcnow()
+            }},
+            upsert=True
+        )
 
 def save_guide_from_message(message: Message) -> str | None:
     guide_text = message.text or message.caption
@@ -117,8 +137,7 @@ def build_guides_paginator(page: int = 0, mode='view'):
 main_keyboard = ReplyKeyboardMarkup([["חיפוש 🔍"]], resize_keyboard=True)
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = update.effective_user
-    users_collection.update_one({"user_id": user.id}, {"$set": {"first_name": user.first_name, "last_name": user.last_name}}, upsert=True)
+    update_user_activity(update.effective_user)
     start_text = """
 👋 שלום וברוך הבא לערוץ!
 אם זו הפעם הראשונה שלך פה – הכנתי לך ערכת התחלה מסודרת 🎁
@@ -136,24 +155,45 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text("השתמש בכפתור החיפוש למטה כדי למצוא מדריך ספציפי:", reply_markup=main_keyboard)
 
 async def guides_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    update_user_activity(update.effective_user)
     text, keyboard = build_guides_paginator(0, mode='view')
     await update.message.reply_text(text, reply_markup=keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
 
 async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    update_user_activity(update.effective_user)
     if not ADMIN_ID or str(update.effective_user.id) != ADMIN_ID: return
     text, keyboard = build_guides_paginator(0, mode='delete')
     await update.message.reply_text(text, reply_markup=keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
 
 async def edit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    update_user_activity(update.effective_user)
     if not ADMIN_ID or str(update.effective_user.id) != ADMIN_ID: return
     text, keyboard = build_guides_paginator(0, mode='edit')
     await update.message.reply_text(text, reply_markup=keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
+    
+async def recent_users_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    update_user_activity(update.effective_user)
+    if not ADMIN_ID or str(update.effective_user.id) != ADMIN_ID: return
+    seven_days_ago = datetime.utcnow() - timedelta(days=7)
+    recent_users = list(users_collection.find({"last_seen": {"$gte": seven_days_ago}}).sort("last_seen", -1))
+    if not recent_users:
+        await update.message.reply_text("לא היו משתמשים פעילים בשבוע האחרון.")
+        return
+    message = "👥 *משתמשים פעילים בשבוע האחרון:*\n\n"
+    for user in recent_users:
+        name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip()
+        last_seen = user.get("last_seen").strftime("%d/%m/%Y %H:%M")
+        message += f"🔹 *{escape_markdown_v2(name)}* \\- נראה לאחרונה: {last_seen} UTC\n"
+    await update.message.reply_text(message, parse_mode='MarkdownV2')
 
+# --- Conversation Handlers ---
 async def search_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    update_user_activity(update.effective_user)
     await update.message.reply_text("נא להזין את מונח החיפוש:")
     return SEARCH_QUERY
 
 async def perform_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    update_user_activity(update.effective_user)
     query = update.message.text
     results = list(guides_collection.find({"title": {"$regex": query, "$options": "i"}}))
     if not results:
@@ -170,6 +210,7 @@ async def perform_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     return ConversationHandler.END
 
 async def edit_guide_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    update_user_activity(update.effective_user)
     query = update.callback_query
     await query.answer()
     guide_id_str = query.data.split(":")[1]
@@ -178,6 +219,7 @@ async def edit_guide_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     return EDIT_GUIDE_TITLE
 
 async def update_guide_title(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    update_user_activity(update.effective_user)
     new_title = update.message.text
     guide_id_str = context.user_data.get('guide_to_edit')
     if not guide_id_str:
@@ -189,11 +231,13 @@ async def update_guide_title(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return ConversationHandler.END
 
 async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    update_user_activity(update.effective_user)
     await update.message.reply_text('הפעולה בוטלה.', reply_markup=main_keyboard)
     context.user_data.clear()
     return ConversationHandler.END
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    update_user_activity(update.effective_user)
     query = update.callback_query
     await query.answer()
     data = query.data
@@ -225,15 +269,25 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def handle_new_guide_in_channel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.channel_post: save_guide_from_message(update.channel_post)
 async def handle_forwarded_guide(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    update_user_activity(update.effective_user)
     saved_title = save_guide_from_message(update.message)
     if saved_title: await update.message.reply_text(f"✅ המדריך '{escape_markdown_v2(saved_title)}' נשמר/עודכן בהצלחה\!", parse_mode='MarkdownV2')
     else: await update.message.reply_text("לא ניתן היה לשמור את ההודעה\.")
+
+# --- The new Error Handler ---
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log the error and send a telegram message to notify the developer."""
+    logger.error("Exception while handling an update:", exc_info=context.error)
 
 # =========================================================================
 # Application Setup & Web Server
 # =========================================================================
 ptb_application = Application.builder().token(BOT_TOKEN).build()
 
+# Add error handler
+ptb_application.add_error_handler(error_handler)
+
+# Conversation Handlers
 search_conv_handler = ConversationHandler(entry_points=[MessageHandler(filters.Regex('^חיפוש 🔍$'), search_start)], states={SEARCH_QUERY: [MessageHandler(filters.TEXT & ~filters.COMMAND, perform_search)]}, fallbacks=[CommandHandler('cancel', cancel_conversation)])
 edit_conv_handler = ConversationHandler(entry_points=[CallbackQueryHandler(edit_guide_start, pattern="^edit:")], states={EDIT_GUIDE_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, update_guide_title)]}, fallbacks=[CommandHandler('cancel', cancel_conversation)])
 
@@ -243,6 +297,7 @@ ptb_application.add_handler(CommandHandler("start", start_command))
 ptb_application.add_handler(CommandHandler("guides", guides_command))
 ptb_application.add_handler(CommandHandler("delete", delete_command))
 ptb_application.add_handler(CommandHandler("edit", edit_command))
+ptb_application.add_handler(CommandHandler("recent_users", recent_users_command))
 ptb_application.add_handler(CallbackQueryHandler(button_callback))
 
 if CHANNEL_ID: ptb_application.add_handler(MessageHandler(filters.Chat(chat_id=int(CHANNEL_ID)) & ~filters.COMMAND & ~filters.POLL, handle_new_guide_in_channel))

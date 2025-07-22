@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: telegram-guides-bot
+    env: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python main.py"
+    plan: free
+    envVars:
+      - key: BOT_TOKEN
+        sync: false  # ידני - תגדיר את הטוקן ב-Render Dashboard
+      - key: WEBHOOK_URL
+        value: https://telegram-guides-bot.onrender.com  # שנה לURL האמיתי שלך
+      - key: PORT
+        value: 8000
+    
+    # הגדרות נוספות
+    autoDeploy: true
+    branch: main
+    
+    # אזור גיאוגרפי (אופציונלי)
+    region: oregon

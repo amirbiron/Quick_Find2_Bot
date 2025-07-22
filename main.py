@@ -30,7 +30,6 @@ ADMIN_ID = os.environ.get("ADMIN_ID")
 
 # --- Constants ---
 GUIDES_PER_PAGE = 7
-MAX_BUTTON_TEXT_LENGTH = 40
 # States for ConversationHandler
 SEARCH_QUERY = 1
 
@@ -46,6 +45,7 @@ guides_collection = db.get_collection("guides")
 # Helper Functions
 # =========================================================================
 def escape_markdown_v2(text: str) -> str:
+    """Escapes characters for Telegram's MarkdownV2 parser."""
     escape_chars = r'_*[]()~`>#+-=|{}.!'
     return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
 
@@ -70,42 +70,39 @@ def build_guides_paginator(page: int = 0, for_delete=False):
     guides_count = guides_collection.count_documents({})
     if guides_count == 0:
         return "לא נמצאו מדריכים במערכת.", None
+
     total_pages = math.ceil(guides_count / GUIDES_PER_PAGE)
     page = max(0, min(page, total_pages - 1))
     guides_to_skip = page * GUIDES_PER_PAGE
     guides = list(guides_collection.find().sort("original_message_id", 1).skip(guides_to_skip).limit(GUIDES_PER_PAGE))
+    
     keyboard = []
+    
     if for_delete:
         message_text = "🗑️ *בחר מדריך למחיקה:*\n\n"
         for guide in guides:
             title = guide.get("title", "ללא כותרת")
-            message_text += f"🔹 {escape_markdown_v2(title)}\n"
             guide_id_str = str(guide["_id"])
-            chat_id = guide.get("original_chat_id")
-            msg_id = guide.get("original_message_id")
-            link = f"https://t.me/c/{str(chat_id).replace('-100', '', 1)}/{msg_id}"
+            message_text += f"🔹 {escape_markdown_v2(title)}\n\n" # Spaced out
             keyboard.append([
-                InlineKeyboardButton("צפה 👁️", url=link),
                 InlineKeyboardButton("מחק 🗑️", callback_data=f"delete:{guide_id_str}")
             ])
-    else:
-        message_text = "📖 *רשימת המדריכים הזמינים:*"
+    else: # The "less crowded" text-as-link view
+        message_text = "📖 *רשימת המדריכים הזמינים:*\n\n"
         for guide in guides:
             title = guide.get("title", "ללא כותרת")
-            if len(title.encode('utf-8')) > MAX_BUTTON_TEXT_LENGTH:
-                display_title = title[:25] + "..."
-            else:
-                display_title = title
             chat_id = guide.get("original_chat_id")
             msg_id = guide.get("original_message_id")
             link = f"https://t.me/c/{str(chat_id).replace('-100', '', 1)}/{msg_id}"
-            keyboard.append([InlineKeyboardButton(display_title, url=link)])
+            message_text += f"🔹 [{escape_markdown_v2(title)}]({link})\n\n" # Spaced out with an extra newline
+
     nav_buttons = []
     callback_prefix = "deletepage" if for_delete else "page"
     if page > 0: nav_buttons.append(InlineKeyboardButton("◀️ הקודם", callback_data=f"{callback_prefix}:{page-1}"))
     nav_buttons.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="noop"))
     if page < total_pages - 1: nav_buttons.append(InlineKeyboardButton("הבא ▶️", callback_data=f"{callback_prefix}:{page+1}"))
     if nav_buttons: keyboard.append(nav_buttons)
+    
     return message_text, InlineKeyboardMarkup(keyboard)
 
 # =========================================================================
@@ -117,10 +114,25 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     user = update.effective_user
     users_collection.update_one({"user_id": user.id}, {"$set": {"first_name": user.first_name, "last_name": user.last_name}}, upsert=True)
     start_text = """
-👋 שלום וברוך הבא!
-השתמש בכפתור החיפוש למטה או בפקודת /guides כדי לראות את כל המדריכים.
+👋 שלום וברוך הבא לערוץ!
+אם זו הפעם הראשונה שלך פה – הכנתי לך ערכת התחלה מסודרת 🎁
+מה תמצא כאן?
+📌 מדריכים שימושיים בעברית
+🧰 כלים מומלצים (AI, מדריכים לאנדרואיד, בוטים)
+💡 רעיונות לפרויקטים אמיתיים
+📥 טופס לשיתוף אנונימי של כלים או מחשבות
+בחר מה שתרצה מתוך הכפתורים למטה ⬇️
 """
-    await update.message.reply_text(start_text, reply_markup=main_keyboard)
+    inline_keyboard = [
+        [InlineKeyboardButton("🧹 מדריך ניקוי מטמון (סמסונג)", url="https://t.me/AndroidAndAI/17")],
+        [InlineKeyboardButton("🧠 מה ChatGPT באמת זוכר עליכם?", url="https://t.me/AndroidAndAI/20")],
+        [InlineKeyboardButton("💸 טריק להנחה ל-GPT", url="https://t.me/AndroidAndAI/23")],
+        [InlineKeyboardButton("📝 טופס שיתוף אנונימי", url="https://oa379okv.forms.app/untitled-form")],
+        [InlineKeyboardButton("📚 כל המדריכים", callback_data="show_guides_start")]
+    ]
+    await update.message.reply_text(start_text, reply_markup=InlineKeyboardMarkup(inline_keyboard))
+    await update.message.reply_text("השתמש בכפתור החיפוש למטה כדי למצוא מדריך ספציפי:", reply_markup=main_keyboard)
+
 
 async def guides_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text, keyboard = build_guides_paginator(0, for_delete=False)
@@ -150,7 +162,7 @@ async def perform_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         chat_id = guide.get("original_chat_id")
         msg_id = guide.get("original_message_id")
         link = f"https://t.me/c/{str(chat_id).replace('-100', '', 1)}/{msg_id}"
-        message += f"🔹 [{escape_markdown_v2(title)}]({link})\n"
+        message += f"🔹 [{escape_markdown_v2(title)}]({link})\n\n" # Spaced out
     await update.message.reply_text(message, reply_markup=main_keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
     return ConversationHandler.END
 
@@ -182,6 +194,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         else: await query.edit_message_text("שגיאה: המדריך לא נמצא\.")
     elif data == "cancel_delete":
         await query.edit_message_text("👍 המחיקה בוטלה\.")
+    elif data == "show_guides_start":
+        await query.message.reply_text("השתמש בפקודה /guides כדי לראות את המדריכים.")
+
 
 async def handle_new_guide_in_channel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.channel_post: save_guide_from_message(update.channel_post)
@@ -195,8 +210,6 @@ async def handle_forwarded_guide(update: Update, context: ContextTypes.DEFAULT_T
 # Application Setup & Web Server
 # =========================================================================
 ptb_application = Application.builder().token(BOT_TOKEN).build()
-
-# --- Handlers ---
 search_conv_handler = ConversationHandler(
     entry_points=[MessageHandler(filters.Regex('^חיפוש 🔍$'), search_start)],
     states={ SEARCH_QUERY: [MessageHandler(filters.TEXT & ~filters.COMMAND, perform_search)] },

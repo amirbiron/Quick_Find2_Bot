@@ -100,7 +100,7 @@ def build_guides_paginator(page: int = 0, mode='view'):
             chat_id = guide.get("original_chat_id")
             msg_id = guide.get("original_message_id")
             link = f"https://t.me/c/{str(chat_id).replace('-100', '', 1)}/{msg_id}"
-            message_text += f"🔹 [{escape_markdown_v2(title)}]({link})\n\n" # Restored the extra newline
+            message_text += f"🔹 [{escape_markdown_v2(title)}]({link})\n\n"
 
     nav_buttons = []
     callback_prefix = f"{mode}page"
@@ -122,6 +122,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     start_text = """
 👋 שלום וברוך הבא לערוץ!
 אם זו הפעם הראשונה שלך פה – הכנתי לך ערכת התחלה מסודרת 🎁
+
 מה תמצא כאן?
 📌 מדריכים שימושיים בעברית
 🧰 כלים מומלצים (AI, מדריכים לאנדרואיד, בוטים)

@@ -1,325 +1,292 @@
-import logging
 import os
-import asyncio
-import math
+import logging
+import threading
+from datetime import datetime
+from flask import Flask
+from typing import Dict, Any
 import re
-import traceback
-import html
 
-from datetime import datetime, timedelta
-
-# --- Imports for the Web Server ---
-from starlette.applications import Starlette
-from starlette.requests import Request
-from starlette.responses import Response
-
-# --- Imports for the Bot ---
-from telegram import Update, Message, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
-from telegram.constants import ParseMode
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler,
-    ChatMemberHandler, ContextTypes, ConversationHandler
+    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
+    ContextTypes, ConversationHandler, filters
 )
-from pymongo import MongoClient
-from bson.objectid import ObjectId
+from telegram.constants import ParseMode
+from telegram.error import Conflict, NetworkError, Forbidden, TimedOut
 
-# --- Load Environment Variables ---
-from dotenv import load_dotenv
-load_dotenv()
+from database.database_manager import Database
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-MONGO_URI = os.environ.get("MONGO_URI")
-WEBHOOK_URL = os.environ.get("RENDER_EXTERNAL_URL")
-CHANNEL_ID = os.environ.get("CHANNEL_ID")
-ADMIN_ID = os.environ.get("ADMIN_ID")
-
-# --- Constants ---
-GUIDES_PER_PAGE = 7
-# States for ConversationHandler
-SEARCH_QUERY, EDIT_GUIDE_TITLE = range(2)
-
-# --- Basic Setup & Database ---
-logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logger = logging.getLogger(__name__)
-
-client = MongoClient(MONGO_URI)
-db = client.get_database("QuickFind2BotDB")
-users_collection = db.get_collection("users")
-guides_collection = db.get_collection("guides")
-
-# =========================================================================
-# Helper Functions
-# =========================================================================
-def escape_markdown_v2(text: str) -> str:
-    """Escapes characters for Telegram's MarkdownV2 parser."""
-    escape_chars = r'_*[]()~`>#+-=|{}.!'
+# Helper function to escape markdown
+def escape_markdown(text: str) -> str:
+    """Helper function to escape telegram markdown characters."""
+    escape_chars = r'\_*[]()~`>#+-=|{}.!'
     return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
 
-def update_user_activity(user):
-    """Updates the user's details and last_seen timestamp in the database."""
-    if user:
-        users_collection.update_one(
-            {"user_id": user.id},
-            {"$set": {
-                "first_name": user.first_name,
-                "last_name": user.last_name,
-                "last_seen": datetime.utcnow()
-            }},
-            upsert=True
-        )
+# --- Flask App for Render Health Check ---
+flask_app = Flask('')
+@flask_app.route('/')
+def health_check():
+    return "Bot is alive!", 200
 
-def save_guide_from_message(message: Message) -> str | None:
-    guide_text = message.text or message.caption
-    if not guide_text or len(guide_text) < 50: return None
-    if message.forward_origin:
-        original_chat_id = message.forward_origin.chat.id
-        original_message_id = message.forward_origin.message_id
-    else:
-        original_chat_id = message.chat_id
-        original_message_id = message.message_id
-    try:
-        title = guide_text.strip().split('\n', 1)[0]
-    except Exception:
-        title = "Guide"
-    guide_document = {"title": title, "original_message_id": original_message_id, "original_chat_id": original_chat_id}
-    guides_collection.update_one({"original_message_id": original_message_id, "original_chat_id": original_chat_id}, {"$set": guide_document}, upsert=True)
-    return title
+def run_flask():
+    port = int(os.environ.get('PORT', 8080))
+    flask_app.run(host='0.0.0.0', port=port)
 
-def build_guides_paginator(page: int = 0, mode='view'):
-    guides_count = guides_collection.count_documents({})
-    if guides_count == 0: return "לא נמצאו מדריכים במערכת.", None
+# --- Bot Configuration ---
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-    total_pages = math.ceil(guides_count / GUIDES_PER_PAGE)
-    page = max(0, min(page, total_pages - 1))
-    guides_to_skip = page * GUIDES_PER_PAGE
-    guides = list(guides_collection.find().sort("original_message_id", 1).skip(guides_to_skip).limit(GUIDES_PER_PAGE))
-    
-    keyboard = []
-    
-    if mode == 'delete' or mode == 'edit':
-        message_text = "🗑️ *בחר מדריך:*\n\n" if mode == 'delete' else "✏️ *בחר מדריך:*\n\n"
-        for guide in guides:
-            title = guide.get("title", "ללא כותרת")
-            guide_id_str = str(guide["_id"])
-            chat_id = guide.get("original_chat_id")
-            msg_id = guide.get("original_message_id")
-            link = f"https://t.me/c/{str(chat_id).replace('-100', '', 1)}/{msg_id}"
-            
-            message_text += f"🔹 {escape_markdown_v2(title)}\n"
-            
-            action_button = InlineKeyboardButton("מחק 🗑️", callback_data=f"delete:{guide_id_str}") if mode == 'delete' else InlineKeyboardButton("ערוך ✏️", callback_data=f"edit:{guide_id_str}")
-            keyboard.append([
-                InlineKeyboardButton("צפה 👁️", url=link),
-                action_button
-            ])
-    else: # View mode with text as links
-        message_text = "📖 *רשימת המדריכים הזמינים:*\n\n"
-        for guide in guides:
-            title = guide.get("title", "ללא כותרת")
-            chat_id = guide.get("original_chat_id")
-            msg_id = guide.get("original_message_id")
-            link = f"https://t.me/c/{str(chat_id).replace('-100', '', 1)}/{msg_id}"
-            message_text += f"🔹 [{escape_markdown_v2(title)}]({link})\n\n"
+# Conversation States
+SELECTING_ACTION, AWAIT_CONTENT, AWAIT_CATEGORY, AWAIT_SUBJECT, AWAIT_SUBJECT_EDIT, AWAIT_NOTE, AWAIT_EDIT, AWAIT_SEARCH = range(8)
 
-    nav_buttons = []
-    callback_prefix = f"{mode}page"
-    if page > 0: nav_buttons.append(InlineKeyboardButton("◀️ הקודם", callback_data=f"{callback_prefix}:{page-1}"))
-    nav_buttons.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="noop"))
-    if page < total_pages - 1: nav_buttons.append(InlineKeyboardButton("הבא ▶️", callback_data=f"{callback_prefix}:{page+1}"))
-    if nav_buttons: keyboard.append(nav_buttons)
-    
-    return message_text, InlineKeyboardMarkup(keyboard)
-
-# =========================================================================
-# Bot Handlers
-# =========================================================================
-main_keyboard = ReplyKeyboardMarkup([["חיפוש 🔍"]], resize_keyboard=True)
-
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    update_user_activity(update.effective_user)
-    start_text = """
-👋 שלום וברוך הבא לערוץ!
-אם זו הפעם הראשונה שלך פה – הכנתי לך ערכת התחלה מסודרת 🎁
-
-מה תמצא כאן?
-📌 מדריכים שימושיים בעברית
-🧰 כלים מומלצים (AI, מדריכים לאנדרואיד, בוטים)
-💡 רעיונות לפרויקטים אמיתיים
-📥 טופס לשיתוף אנונימי של כלים או מחשבות
-
-בחר מה שתרצה מתוך הכפתורים למטה ⬇️
-"""
-    inline_keyboard = [[InlineKeyboardButton("🧹 מדריך ניקוי מטמון (סמסונג)", url="https://t.me/AndroidAndAI/17")], [InlineKeyboardButton("🧠 מה ChatGPT באמת זוכר עליכם?", url="https://t.me/AndroidAndAI/20")], [InlineKeyboardButton("💸 טריק להנחה ל-GPT", url="https://t.me/AndroidAndAI/23")], [InlineKeyboardButton("📝 טופס שיתוף אנונימי", url="https://oa379okv.forms.app/untitled-form")], [InlineKeyboardButton("📚 כל המדריכים", callback_data="show_guides_start")]]
-    await update.message.reply_text(start_text, reply_markup=InlineKeyboardMarkup(inline_keyboard))
-    await update.message.reply_text("השתמש בכפתור החיפוש למטה כדי למצוא מדריך ספציפי:", reply_markup=main_keyboard)
-
-async def guides_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    update_user_activity(update.effective_user)
-    text, keyboard = build_guides_paginator(0, mode='view')
-    await update.message.reply_text(text, reply_markup=keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
-
-async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    update_user_activity(update.effective_user)
-    if not ADMIN_ID or str(update.effective_user.id) != ADMIN_ID: return
-    text, keyboard = build_guides_paginator(0, mode='delete')
-    await update.message.reply_text(text, reply_markup=keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
-
-async def edit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    update_user_activity(update.effective_user)
-    if not ADMIN_ID or str(update.effective_user.id) != ADMIN_ID: return
-    text, keyboard = build_guides_paginator(0, mode='edit')
-    await update.message.reply_text(text, reply_markup=keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
-    
-async def recent_users_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    update_user_activity(update.effective_user)
-    if not ADMIN_ID or str(update.effective_user.id) != ADMIN_ID: return
-    seven_days_ago = datetime.utcnow() - timedelta(days=7)
-    recent_users = list(users_collection.find({"last_seen": {"$gte": seven_days_ago}}).sort("last_seen", -1))
-    if not recent_users:
-        await update.message.reply_text("לא היו משתמשים פעילים בשבוע האחרון.")
-        return
-    message = "👥 *משתמשים פעילים בשבוע האחרון:*\n\n"
-    for user in recent_users:
-        name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip()
-        last_seen = user.get("last_seen").strftime("%d/%m/%Y %H:%M")
-        message += f"🔹 *{escape_markdown_v2(name)}* \\- נראה לאחרונה: {last_seen} UTC\n"
-    await update.message.reply_text(message, parse_mode='MarkdownV2')
-
-# --- Conversation Handlers ---
-async def search_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    update_user_activity(update.effective_user)
-    await update.message.reply_text("נא להזין את מונח החיפוש:")
-    return SEARCH_QUERY
-
-async def perform_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    update_user_activity(update.effective_user)
-    query = update.message.text
-    results = list(guides_collection.find({"title": {"$regex": query, "$options": "i"}}))
-    if not results:
-        await update.message.reply_text(f"לא נמצאו מדריכים התואמים לחיפוש.", reply_markup=main_keyboard)
-        return ConversationHandler.END
-    message = f"🔍 *תוצאות חיפוש עבור '{escape_markdown_v2(query)}':*\n\n"
-    for guide in results:
-        title = guide.get("title", "ללא כותרת")
-        chat_id = guide.get("original_chat_id")
-        msg_id = guide.get("original_message_id")
-        link = f"https://t.me/c/{str(chat_id).replace('-100', '', 1)}/{msg_id}"
-        message += f"🔹 [{escape_markdown_v2(title)}]({link})\n\n"
-    await update.message.reply_text(message, reply_markup=main_keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
-    return ConversationHandler.END
-
-async def edit_guide_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    update_user_activity(update.effective_user)
-    query = update.callback_query
-    await query.answer()
-    guide_id_str = query.data.split(":")[1]
-    context.user_data['guide_to_edit'] = guide_id_str
-    await query.edit_message_text("נא לשלוח את השם החדש עבור המדריך:")
-    return EDIT_GUIDE_TITLE
-
-async def update_guide_title(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    update_user_activity(update.effective_user)
-    new_title = update.message.text
-    guide_id_str = context.user_data.get('guide_to_edit')
-    if not guide_id_str:
-        await update.message.reply_text("שגיאה, לא נמצא מדריך לעריכה.", reply_markup=main_keyboard)
-        return ConversationHandler.END
-    guides_collection.update_one({"_id": ObjectId(guide_id_str)}, {"$set": {"title": new_title}})
-    await update.message.reply_text(f"✅ השם עודכן בהצלחה ל: '{new_title}'", reply_markup=main_keyboard)
-    context.user_data.clear()
-    return ConversationHandler.END
-
-async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    update_user_activity(update.effective_user)
-    await update.message.reply_text('הפעולה בוטלה.', reply_markup=main_keyboard)
-    context.user_data.clear()
-    return ConversationHandler.END
-
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    update_user_activity(update.effective_user)
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    if data == "noop": return
-    if "page:" in data:
-        mode_str, page_str = data.split("page:")
-        page = int(page_str)
-        text, keyboard = build_guides_paginator(page, mode=mode_str)
-        if keyboard: await query.edit_message_text(text, reply_markup=keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
-    elif data.startswith("delete:"):
-        guide_id_str = data.split(":")[1]
-        guide = guides_collection.find_one({"_id": ObjectId(guide_id_str)})
-        if guide:
-            title_preview = escape_markdown_v2(guide.get('title', '')[:50])
-            text = f"❓ האם אתה בטוח שברצונך למחוק את המדריך '{title_preview}\.\.\.'?"
-            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("✅ כן, מחק", callback_data=f"confirm_delete:{guide_id_str}"), InlineKeyboardButton("❌ לא, בטל", callback_data="cancel_delete")]])
-            await query.edit_message_text(text, reply_markup=keyboard, parse_mode='MarkdownV2')
-    elif data.startswith("confirm_delete:"):
-        guide_id_str = data.split(":")[1]
-        result = guides_collection.delete_one({"_id": ObjectId(guide_id_str)})
-        if result.deleted_count > 0: await query.edit_message_text("🗑️ המדריך נמחק בהצלחה\.")
-        else: await query.edit_message_text("שגיאה: המדריך לא נמצא\.")
-    elif data == "cancel_delete":
-        await query.edit_message_text("👍 המחיקה בוטלה\.")
-    elif data == "show_guides_start":
-        text, keyboard = build_guides_paginator(0, mode='view')
-        await query.message.reply_text(text, reply_markup=keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
-
-async def handle_new_guide_in_channel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.channel_post: save_guide_from_message(update.channel_post)
-async def handle_forwarded_guide(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    update_user_activity(update.effective_user)
-    saved_title = save_guide_from_message(update.message)
-    if saved_title: await update.message.reply_text(f"✅ המדריך '{escape_markdown_v2(saved_title)}' נשמר/עודכן בהצלחה\!", parse_mode='MarkdownV2')
-    else: await update.message.reply_text("לא ניתן היה לשמור את ההודעה\.")
-
-# --- The new Error Handler ---
+# --- Error Handler ---
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Log the error and send a telegram message to notify the developer."""
-    logger.error("Exception while handling an update:", exc_info=context.error)
+    error = context.error
+    logger.error("Exception while handling an update:", exc_info=error)
+    # Add specific error handling if needed
 
-# =========================================================================
-# Application Setup & Web Server
-# =========================================================================
-ptb_application = Application.builder().token(BOT_TOKEN).build()
+class SaveMeBot:
+    def __init__(self):
+        db_path = os.environ.get('DATABASE_PATH', 'save_me_bot.db')
+        self.db = Database(db_path=db_path)
 
-# Add error handler
-ptb_application.add_error_handler(error_handler)
+    # --- Main Menu and State Entrypoints ---
+    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        username = update.effective_user.first_name
+        welcome_text = f"שלום {username}! 👋\nברוך הבא לבוט 'שמור לי'.\nבחר פעולה מהתפריט:"
+        keyboard = [
+            [KeyboardButton("➕ הוסף תוכן")],
+            [KeyboardButton("🔍 חיפוש"), KeyboardButton("📚 הצג קטגוריות")],
+            [KeyboardButton("⚙️ הגדרות")]
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        await update.message.reply_text(welcome_text, reply_markup=reply_markup)
+        return SELECTING_ACTION
 
-# Conversation Handlers
-search_conv_handler = ConversationHandler(entry_points=[MessageHandler(filters.Regex('^חיפוש 🔍$'), search_start)], states={SEARCH_QUERY: [MessageHandler(filters.TEXT & ~filters.COMMAND, perform_search)]}, fallbacks=[CommandHandler('cancel', cancel_conversation)])
-edit_conv_handler = ConversationHandler(entry_points=[CallbackQueryHandler(edit_guide_start, pattern="^edit:")], states={EDIT_GUIDE_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, update_guide_title)]}, fallbacks=[CommandHandler('cancel', cancel_conversation)])
+    async def ask_for_content(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        await update.message.reply_text("שלח לי את התוכן לשמירה:")
+        return AWAIT_CONTENT
 
-ptb_application.add_handler(search_conv_handler)
-ptb_application.add_handler(edit_conv_handler)
-ptb_application.add_handler(CommandHandler("start", start_command))
-ptb_application.add_handler(CommandHandler("guides", guides_command))
-ptb_application.add_handler(CommandHandler("delete", delete_command))
-ptb_application.add_handler(CommandHandler("edit", edit_command))
-ptb_application.add_handler(CommandHandler("recent_users", recent_users_command))
-ptb_application.add_handler(CallbackQueryHandler(button_callback))
+    async def ask_for_search_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        await update.message.reply_text("מה לחפש?")
+        return AWAIT_SEARCH
 
-if CHANNEL_ID: ptb_application.add_handler(MessageHandler(filters.Chat(chat_id=int(CHANNEL_ID)) & ~filters.COMMAND & ~filters.POLL, handle_new_guide_in_channel))
-ptb_application.add_handler(MessageHandler(filters.FORWARDED & ~filters.POLL, handle_forwarded_guide))
+    # --- Display Logic ---
+    async def show_item_with_actions(self, update_or_query, context: ContextTypes.DEFAULT_TYPE, item_id: int):
+        item = self.db.get_item(item_id)
+        if not item:
+            if hasattr(update_or_query, 'edit_message_text'):
+                await update_or_query.edit_message_text("הפריט נמחק.")
+            return
 
-# --- Web Server ---
-async def on_startup():
-    await ptb_application.initialize()
-    webhook_path = f"/{BOT_TOKEN.split(':')[-1]}"
-    url = f"{WEBHOOK_URL}{webhook_path}"
-    await ptb_application.bot.set_webhook(url=url)
-    logging.info(f"Webhook set to {url}")
+        # --- הודעת ניהול (מטא-דאטה וכפתורים) ---
+        category = escape_markdown(item['category'])
+        subject = escape_markdown(item['subject'])
+        note = escape_markdown(item.get('note', ''))
 
-async def on_shutdown():
-    await ptb_application.shutdown()
-    logging.info("Application shut down")
+        metadata_text = f"📁 **קטגוריה:** {category}\n📝 **נושא:** {subject}"
+        if note:
+            metadata_text += f"\n\n🗒️ **הערה:** {note}"
 
-app = Starlette(on_startup=[on_startup], on_shutdown=[on_shutdown])
+        pin_text = "📌 בטל קיבוע" if item.get('is_pinned') else "📌 קבע"
+        note_text = "✏️ ערוך הערה" if item.get('note') else "📝 הוסף הערה"
+        keyboard = [
+            [InlineKeyboardButton(pin_text, callback_data=f"pin_{item_id}")],
+            [InlineKeyboardButton("✏️ ערוך נושא", callback_data=f"editsubject_{item_id}")],
+            [InlineKeyboardButton("✏️ ערוך תוכן", callback_data=f"edit_{item_id}")],
+            [InlineKeyboardButton(note_text, callback_data=f"note_{item_id}")],
+            [InlineKeyboardButton("🗑️ מחק", callback_data=f"delete_{item_id}")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
 
-@app.route(f"/{BOT_TOKEN.split(':')[-1]}", methods=["POST"])
-async def telegram_webhook(request: Request) -> Response:
-    data = await request.json()
-    update = Update.de_json(data, ptb_application.bot)
-    await ptb_application.process_update(update)
-    return Response(status_code=200)
+        chat_id = update_or_query.message.chat.id
+        if hasattr(update_or_query, 'edit_message_text'):
+            await update_or_query.edit_message_text(metadata_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+        else:
+            await context.bot.send_message(chat_id=chat_id, text=metadata_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+
+        content_type = item.get('content_type')
+        if content_type == 'text':
+            await context.bot.send_message(chat_id=chat_id, text=item['content'])
+        elif content_type and item.get('file_id'):
+            send_map = {'photo': context.bot.send_photo, 'document': context.bot.send_document, 'video': context.bot.send_video, 'voice': context.bot.send_voice}
+            if content_type in send_map:
+                await send_map[content_type](chat_id=chat_id, **{content_type: item['file_id'], 'caption': item.get('caption', '')})
+
+    # --- All other class methods from your bot logic go here ---
+    # (show_categories, handle_search, receive_content, receive_category, save_note, etc.)
+    async def show_categories(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        categories = self.db.get_user_categories(update.effective_user.id)
+        if not categories:
+            await update.message.reply_text("אין קטגוריות עדיין.")
+            return
+        keyboard = [[InlineKeyboardButton(f"{cat} ({self.db.get_category_count(update.effective_user.id, cat)})", callback_data=f"showcat_{cat}")] for cat in categories]
+        await update.message.reply_text("בחר קטגוריה להצגה:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+    async def handle_search_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        query = update.message.text.strip()
+        results = self.db.search_items(update.effective_user.id, query)
+        if not results:
+            await update.message.reply_text("לא נמצאו תוצאות.")
+        else:
+            keyboard = [[InlineKeyboardButton(f"{item['category']} | {item['subject']}", callback_data=f"showitem_{item['id']}")] for item in results[:10]]
+            await update.message.reply_text(f"נמצאו {len(results)} תוצאות:", reply_markup=InlineKeyboardMarkup(keyboard))
+        return await self.start(update, context) # Return to main menu
+
+    async def receive_content(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        message = update.message
+        content_data = {}
+        if message.text: content_data.update({'type': 'text', 'content': message.text})
+        elif message.photo: content_data.update({'type': 'photo', 'file_id': message.photo[-1].file_id, 'caption': message.caption or ""})
+        elif message.document: content_data.update({'type': 'document', 'file_id': message.document.file_id, 'file_name': message.document.file_name, 'caption': message.caption or ""})
+        else:
+            await update.message.reply_text("סוג תוכן לא נתמך.")
+            return await self.start(update, context)
+
+        context.user_data['new_item'] = content_data
+
+        categories = self.db.get_user_categories(update.effective_user.id)
+        keyboard = [[InlineKeyboardButton(c, callback_data=f"cat_{c}")] for c in categories]
+        keyboard.append([InlineKeyboardButton("🆕 קטגוריה חדשה", callback_data="cat_new")])
+        await update.message.reply_text("בחר קטגוריה:", reply_markup=InlineKeyboardMarkup(keyboard))
+        return AWAIT_CATEGORY
+
+    async def receive_category(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        query = update.callback_query
+        category_name = ""
+        if query:
+            await query.answer()
+            if query.data == 'cat_new':
+                await query.edit_message_text("הקלד שם לקטגוריה החדשה:")
+                return AWAIT_CATEGORY
+            category_name = query.data.replace('cat_', '')
+            await query.edit_message_text(f"קטגוריה: {category_name}\n\nכעת, הקלד נושא:")
+        else:
+            category_name = update.message.text.strip()
+            await update.message.reply_text(f"קטגוריה: {category_name}\n\nכעת, הקלד נושא:")
+
+        context.user_data['new_item']['category'] = category_name
+        return AWAIT_SUBJECT
+
+    async def receive_subject_and_save(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        context.user_data['new_item']['subject'] = update.message.text.strip()
+        item_data = context.user_data['new_item']
+        
+        # Call the save_item function with all required parameters
+        item_id = self.db.save_item(
+            user_id=update.effective_user.id,
+            category=item_data.get('category'),
+            subject=item_data.get('subject'),
+            content_type=item_data.get('type'),
+            content=item_data.get('content', ''),
+            file_id=item_data.get('file_id', ''),
+            file_name=item_data.get('file_name', ''),
+            caption=item_data.get('caption', '')
+        )
+        
+        await update.message.reply_text("✅ נשמר בהצלחה!")
+        await self.show_item_with_actions(update, context, item_id)
+        
+        # Clean up user_data and return to the main menu
+        del context.user_data['new_item']
+        return await self.start(update, context)
+
+    async def save_note(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        item_id = context.user_data.get('action_item_id')
+        if not item_id: return await self.start(update, context)
+        self.db.update_note(item_id, update.message.text)
+        await update.message.reply_text("✅ ההערה עודכנה.")
+        await self.show_item_with_actions(update, context, item_id)
+        del context.user_data['action_item_id']
+        return await self.start(update, context)
+
+    async def item_action_router(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        query = update.callback_query; await query.answer()
+        action, item_id_str = query.data.split('_', 1)
+        item_id = int(item_id_str)
+
+        if action in ['showitem', 'pin', 'delete']:
+            if action == 'pin': self.db.toggle_pin(item_id)
+            if action == 'delete': self.db.delete_item(item_id); await query.edit_message_text("✅ הפריט נמחק."); return SELECTING_ACTION
+            await self.show_item_with_actions(query, context, item_id)
+            return SELECTING_ACTION
+
+        context.user_data['action_item_id'] = item_id
+        if action == 'note': await query.edit_message_text("הקלד את ההערה:"); return AWAIT_NOTE
+        elif action == 'edit': await query.edit_message_text("שלח את התוכן החדש:"); return AWAIT_EDIT
+        elif action == 'editsubject': await query.edit_message_text("הקלד את הנושא החדש:"); return AWAIT_SUBJECT_EDIT
+
+        return SELECTING_ACTION
+
+    async def save_edited_subject(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        item_id = context.user_data.get('action_item_id')
+        if not item_id:
+            return await self.start(update, context)
+        new_subject = update.message.text.strip()
+        self.db.update_subject(item_id, new_subject)
+        await update.message.reply_text("✅ הנושא עודכן.")
+        await self.show_item_with_actions(update, context, item_id)
+        del context.user_data['action_item_id']
+        return await self.start(update, context)
+
+    async def show_category_items(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query; await query.answer()
+        category = query.data.replace('showcat_', '')
+        items = self.db.get_category_items(update.effective_user.id, category)
+        if not items:
+            await query.edit_message_text("אין פריטים בקטגוריה זו.")
+            return
+        keyboard = [[InlineKeyboardButton(f"{'📌 ' if item['is_pinned'] else ''}{item['subject']}", callback_data=f"showitem_{item['id']}")] for item in items]
+        await query.edit_message_text(f"📁 פריטים בקטגוריית {category}:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+    async def show_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await update.message.reply_text("אזור הגדרות (בבנייה).")
+
+    async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        await update.message.reply_text("הפעולה בוטלה.")
+        return await self.start(update, context)
+
+def main() -> None:
+    token = os.environ.get('BOT_TOKEN')
+    if not token: logger.error("FATAL: BOT_TOKEN is not set."); return
+
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.start()
+
+    bot = SaveMeBot()
+    application = Application.builder().token(token).build()
+    application.add_error_handler(error_handler)
+
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler('start', bot.start)],
+        states={
+            SELECTING_ACTION: [
+                MessageHandler(filters.TEXT & filters.Regex('^➕ הוסף תוכן$'), bot.ask_for_content),
+                MessageHandler(filters.TEXT & filters.Regex('^🔍 חיפוש$'), bot.ask_for_search_query),
+                MessageHandler(filters.TEXT & filters.Regex('^📚 הצג קטגוריות$'), bot.show_categories),
+                MessageHandler(filters.TEXT & filters.Regex('^⚙️ הגדרות$'), bot.show_settings),
+                CallbackQueryHandler(bot.show_category_items, pattern="^showcat_"),
+                CallbackQueryHandler(bot.item_action_router, pattern="^(showitem_|pin_|delete_|note_|edit_|editsubject_)")
+            ],
+            AWAIT_CONTENT: [MessageHandler(filters.ALL & ~filters.COMMAND, bot.receive_content)],
+            AWAIT_CATEGORY: [CallbackQueryHandler(bot.receive_category, pattern="^cat_"), MessageHandler(filters.TEXT & ~filters.COMMAND, bot.receive_category)],
+            AWAIT_SUBJECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.receive_subject_and_save)],
+            AWAIT_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_search_query)],
+            AWAIT_NOTE: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.save_note)],
+            AWAIT_EDIT: [MessageHandler(filters.ALL & ~filters.COMMAND, lambda u,c: c.bot.send_message(u.effective_chat.id, "Edit not implemented yet"))], # Placeholder
+            AWAIT_SUBJECT_EDIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.save_edited_subject)]
+        },
+        fallbacks=[CommandHandler('cancel', bot.cancel)],
+        allow_reentry=True
+    )
+
+    application.add_handler(conv_handler)
+
+    logger.info("Bot is starting to poll...")
+    application.run_polling()
+
+if __name__ == '__main__':
+    main()

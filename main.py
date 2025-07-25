@@ -16,6 +16,7 @@ from starlette.responses import Response
 # --- Imports for the Bot ---
 from telegram import Update, Message, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.constants import ParseMode
+from telegram.error import BadRequest
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler,
     ChatMemberHandler, ContextTypes, ConversationHandler
@@ -249,7 +250,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if keyboard:
             try:
                 await query.edit_message_text(text, reply_markup=keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
-            except telegram.error.BadRequest as e:
+            except BadRequest as e:
                 if "Message is not modified" in str(e):
                     pass
                 else:

@@ -246,15 +246,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if "page:" in data:
         mode_str, page_str = data.split("page:")
         page = int(page_str)
+        await query.edit_message_text("⏳ טוען מדריכים...")
+        await asyncio.sleep(0.5)
         text, keyboard = build_guides_paginator(page, mode=mode_str)
-        if keyboard:
-            try:
-                await query.edit_message_text(text, reply_markup=keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
-            except BadRequest as e:
-                if "Message is not modified" in str(e):
-                    pass
-                else:
-                    raise
+        try:
+            await query.edit_message_text(text, reply_markup=keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
+        except BadRequest as e:
+            if "Message is not modified" in str(e):
+                pass
+            else:
+                raise
     elif data.startswith("delete:"):
         guide_id_str = data.split(":")[1]
         guide = guides_collection.find_one({"_id": ObjectId(guide_id_str)})

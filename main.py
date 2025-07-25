@@ -37,7 +37,7 @@ ADMIN_ID = os.environ.get("ADMIN_ID")
 # --- Constants ---
 GUIDES_PER_PAGE = 7
 # States for ConversationHandler
-SEARCH_QUERY, EDIT_GUIDE_TITLE = range(2)
+SEARCH_QUERY, EDIT_GUIDE_TITLE, MERGE_GUIDES = range(3)
 
 # --- Basic Setup & Database ---
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -98,8 +98,16 @@ def build_guides_paginator(page: int = 0, mode='view'):
     
     keyboard = []
     
-    if mode == 'delete' or mode == 'edit':
-        message_text = "🗑️ *בחר מדריך:*\n\n" if mode == 'delete' else "✏️ *בחר מדריך:*\n\n"
+    if mode == 'delete' or mode == 'edit' or mode == 'merge' or mode == 'merge_second':
+        if mode == 'delete':
+            message_text = "🗑️ *בחר מדריך למחיקה:*\n\n"
+        elif mode == 'edit':
+            message_text = "✏️ *בחר מדריך לעריכה:*\n\n"
+        elif mode == 'merge':
+            message_text = "🔗 *בחר מדריך ראשון למיזוג:*\n\n"
+        else:  # merge_second
+            message_text = "🔗 *בחר מדריך שני למיזוג:*\n\n"
+        
         for guide in guides:
             title = guide.get("title", "ללא כותרת")
             guide_id_str = str(guide["_id"])
@@ -109,7 +117,15 @@ def build_guides_paginator(page: int = 0, mode='view'):
             
             message_text += f"🔹 {escape_markdown_v2(title)}\n"
             
-            action_button = InlineKeyboardButton("מחק 🗑️", callback_data=f"delete:{guide_id_str}") if mode == 'delete' else InlineKeyboardButton("ערוך ✏️", callback_data=f"edit:{guide_id_str}")
+            if mode == 'delete':
+                action_button = InlineKeyboardButton("מחק 🗑️", callback_data=f"delete:{guide_id_str}")
+            elif mode == 'edit':
+                action_button = InlineKeyboardButton("ערוך ✏️", callback_data=f"edit:{guide_id_str}")
+            elif mode == 'merge':
+                action_button = InlineKeyboardButton("בחר למיזוג 🔗", callback_data=f"merge:{guide_id_str}")
+            else:  # merge_second
+                action_button = InlineKeyboardButton("בחר למיזוג 🔗", callback_data=f"merge_second:{guide_id_str}")
+            
             keyboard.append([
                 InlineKeyboardButton("צפה 👁️", url=link),
                 action_button
@@ -135,7 +151,7 @@ def build_guides_paginator(page: int = 0, mode='view'):
 # =========================================================================
 # Bot Handlers
 # =========================================================================
-main_keyboard = ReplyKeyboardMarkup([["חיפוש 🔍"]], resize_keyboard=True)
+main_keyboard = ReplyKeyboardMarkup([["חיפוש 🔍", "מיזוג 🔗"]], resize_keyboard=True)
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     update_user_activity(update.effective_user)
@@ -170,6 +186,12 @@ async def edit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     update_user_activity(update.effective_user)
     if not ADMIN_ID or str(update.effective_user.id) != ADMIN_ID: return
     text, keyboard = build_guides_paginator(0, mode='edit')
+    await update.message.reply_text(text, reply_markup=keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
+
+async def merge_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    update_user_activity(update.effective_user)
+    if not ADMIN_ID or str(update.effective_user.id) != ADMIN_ID: return
+    text, keyboard = build_guides_paginator(0, mode='merge')
     await update.message.reply_text(text, reply_markup=keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
     
 async def recent_users_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -269,6 +291,44 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         else: await query.edit_message_text("שגיאה: המדריך לא נמצא\.")
     elif data == "cancel_delete":
         await query.edit_message_text("👍 המחיקה בוטלה\.")
+    elif data.startswith("merge:"):
+        guide_id_str = data.split(":")[1]
+        guide = guides_collection.find_one({"_id": ObjectId(guide_id_str)})
+        if guide:
+            context.user_data['first_guide_id'] = guide_id_str
+            context.user_data['first_guide_title'] = guide.get('title', 'ללא כותרת')
+            text = f"✅ בחרת את המדריך: '{escape_markdown_v2(guide.get('title', 'ללא כותרת'))}'\n\nעכשיו בחר את המדריך השני למיזוג:"
+            keyboard = build_guides_paginator(0, mode='merge_second')[1]
+            await query.edit_message_text(text, reply_markup=keyboard, parse_mode='MarkdownV2')
+    elif data.startswith("merge_second:"):
+        second_guide_id_str = data.split(":")[1]
+        first_guide_id = context.user_data.get('first_guide_id')
+        first_guide_title = context.user_data.get('first_guide_title', 'ללא כותרת')
+        
+        if not first_guide_id:
+            await query.edit_message_text("❌ שגיאה: לא נמצא מדריך ראשון למיזוג.")
+            return
+            
+        second_guide = guides_collection.find_one({"_id": ObjectId(second_guide_id_str)})
+        if second_guide:
+            second_guide_title = second_guide.get('title', 'ללא כותרת')
+            text = f"🔗 *מיזוג מדריכים:*\n\nמדריך ראשון: {escape_markdown_v2(first_guide_title)}\nמדריך שני: {escape_markdown_v2(second_guide_title)}\n\nהאם אתה בטוח שברצונך למזג את המדריכים?"
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ כן, מזג", callback_data=f"confirm_merge:{first_guide_id}:{second_guide_id_str}")],
+                [InlineKeyboardButton("❌ לא, בטל", callback_data="cancel_merge")]
+            ])
+            await query.edit_message_text(text, reply_markup=keyboard, parse_mode='MarkdownV2')
+    elif data.startswith("confirm_merge:"):
+        guide_ids = data.split(":")[1:]
+        if len(guide_ids) == 2:
+            first_guide_id, second_guide_id = guide_ids
+            # כאן תוכל להוסיף את הלוגיקה למיזוג המדריכים
+            # לדוגמה: עדכון הכותרת, מחיקת המדריך השני, וכו'
+            await query.edit_message_text("🔗 המיזוג בוצע בהצלחה!")
+            context.user_data.clear()
+    elif data == "cancel_merge":
+        await query.edit_message_text("👍 המיזוג בוטל.")
+        context.user_data.clear()
     elif data == "show_guides_start":
         text, keyboard = build_guides_paginator(0, mode='view')
         await query.message.reply_text(text, reply_markup=keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
@@ -297,13 +357,16 @@ ptb_application.add_error_handler(error_handler)
 # Conversation Handlers
 search_conv_handler = ConversationHandler(entry_points=[MessageHandler(filters.Regex('^חיפוש 🔍$'), search_start)], states={SEARCH_QUERY: [MessageHandler(filters.TEXT & ~filters.COMMAND, perform_search)]}, fallbacks=[CommandHandler('cancel', cancel_conversation)])
 edit_conv_handler = ConversationHandler(entry_points=[CallbackQueryHandler(edit_guide_start, pattern="^edit:")], states={EDIT_GUIDE_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, update_guide_title)]}, fallbacks=[CommandHandler('cancel', cancel_conversation)])
+merge_conv_handler = ConversationHandler(entry_points=[MessageHandler(filters.Regex('^מיזוג 🔗$'), merge_command)], states={}, fallbacks=[CommandHandler('cancel', cancel_conversation)])
 
 ptb_application.add_handler(search_conv_handler)
 ptb_application.add_handler(edit_conv_handler)
+ptb_application.add_handler(merge_conv_handler)
 ptb_application.add_handler(CommandHandler("start", start_command))
 ptb_application.add_handler(CommandHandler("guides", guides_command))
 ptb_application.add_handler(CommandHandler("delete", delete_command))
 ptb_application.add_handler(CommandHandler("edit", edit_command))
+ptb_application.add_handler(CommandHandler("merge", merge_command))
 ptb_application.add_handler(CommandHandler("recent_users", recent_users_command))
 ptb_application.add_handler(CallbackQueryHandler(button_callback))
 

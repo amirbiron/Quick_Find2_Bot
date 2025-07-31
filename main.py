@@ -72,7 +72,7 @@ def update_user_activity(user):
 
 def save_guide_from_message(message: Message) -> str | None:
     guide_text = message.text or message.caption
-    if not guide_text or len(guide_text) < 50: return None
+    if not guide_text or len(guide_text) < 100: return None
     if message.forward_origin:
         original_chat_id = message.forward_origin.chat.id
         original_message_id = message.forward_origin.message_id
@@ -127,7 +127,7 @@ def build_guides_paginator(page: int = 0, mode='view'):
     callback_prefix = f"{mode}page"
     if page > 0: nav_buttons.append(InlineKeyboardButton("◀️ הקודם", callback_data=f"{callback_prefix}:{page-1}"))
     nav_buttons.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="noop"))
-    if page < total_pages - 1: nav_buttons.append(InlineKeyboardButton("הבא ▶️", callback_data=f"{callback_prefix}:{page+1}"))
+    if page < total_pages - 1: nav_buttons.append(InlineKeyboardButton("הבא ▶️", callback_data=f"{callback_prefix}:{page+1}:loading"))
     if nav_buttons: keyboard.append(nav_buttons)
     
     return message_text, InlineKeyboardMarkup(keyboard)
@@ -136,6 +136,7 @@ def build_guides_paginator(page: int = 0, mode='view'):
 # Bot Handlers
 # =========================================================================
 main_keyboard = ReplyKeyboardMarkup([["חיפוש 🔍"]], resize_keyboard=True)
+admin_keyboard = ReplyKeyboardMarkup([["חיפוש 🔍"], ["מנהל 👤"]], resize_keyboard=True)
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     update_user_activity(update.effective_user)
@@ -155,7 +156,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 """
     inline_keyboard = [[InlineKeyboardButton("🧹 מדריך ניקוי מטמון (סמסונג)", url="https://t.me/AndroidAndAI/17")], [InlineKeyboardButton("🧠 מה ChatGPT באמת זוכר עליכם?", url="https://t.me/AndroidAndAI/20")], [InlineKeyboardButton("💸 טריק להנחה ל-GPT", url="https://t.me/AndroidAndAI/23")], [InlineKeyboardButton("📝 טופס שיתוף אנונימי", url="https://oa379okv.forms.app/untitled-form")], [InlineKeyboardButton("📚 כל המדריכים", callback_data="show_guides_start")]]
     await update.message.reply_text(start_text, reply_markup=InlineKeyboardMarkup(inline_keyboard))
-    await update.message.reply_text("השתמש בכפתור החיפוש למטה כדי למצוא מדריך ספציפי:", reply_markup=main_keyboard)
+    # Use admin keyboard for admin, regular keyboard for others
+    keyboard = admin_keyboard if ADMIN_ID and str(update.effective_user.id) == ADMIN_ID else main_keyboard
+    await update.message.reply_text("השתמש בכפתור החיפוש למטה כדי למצוא מדריך ספציפי:", reply_markup=keyboard)
 
 async def guides_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     update_user_activity(update.effective_user)
@@ -202,6 +205,21 @@ async def contact_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 """
     await update.message.reply_text(contact_text, parse_mode='MarkdownV2')
 
+async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle admin menu button press"""
+    update_user_activity(update.effective_user)
+    if not ADMIN_ID or str(update.effective_user.id) != ADMIN_ID:
+        await update.message.reply_text("אין לך הרשאות מנהל.")
+        return
+    
+    admin_text = "👤 *תפריט מנהל*\n\nבחר פעולה:"
+    inline_keyboard = [
+        [InlineKeyboardButton("👥 משתמשים אחרונים", callback_data="admin_recent_users")],
+        [InlineKeyboardButton("✏️ עריכת מדריכים", callback_data="admin_edit_guides")],
+        [InlineKeyboardButton("🗑️ מחיקת מדריכים", callback_data="admin_delete_guides")]
+    ]
+    await update.message.reply_text(admin_text, reply_markup=InlineKeyboardMarkup(inline_keyboard), parse_mode='MarkdownV2')
+
 # --- Conversation Handlers ---
 async def search_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     update_user_activity(update.effective_user)
@@ -213,7 +231,8 @@ async def perform_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     query = update.message.text
     results = list(guides_collection.find({"title": {"$regex": query, "$options": "i"}}))
     if not results:
-        await update.message.reply_text(f"לא נמצאו מדריכים התואמים לחיפוש.", reply_markup=main_keyboard)
+        keyboard = admin_keyboard if ADMIN_ID and str(update.effective_user.id) == ADMIN_ID else main_keyboard
+        await update.message.reply_text(f"לא נמצאו מדריכים התואמים לחיפוש.", reply_markup=keyboard)
         return ConversationHandler.END
     message = f"🔍 *תוצאות חיפוש עבור '{escape_markdown_v2(query)}':*\n\n"
     for guide in results:
@@ -222,7 +241,8 @@ async def perform_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         msg_id = guide.get("original_message_id")
         link = f"https://t.me/c/{str(chat_id).replace('-100', '', 1)}/{msg_id}"
         message += f"🔹 [{escape_markdown_v2(title)}]({link})\n\n"
-    await update.message.reply_text(message, reply_markup=main_keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
+    keyboard = admin_keyboard if ADMIN_ID and str(update.effective_user.id) == ADMIN_ID else main_keyboard
+    await update.message.reply_text(message, reply_markup=keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
     return ConversationHandler.END
 
 async def edit_guide_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -239,16 +259,19 @@ async def update_guide_title(update: Update, context: ContextTypes.DEFAULT_TYPE)
     new_title = update.message.text
     guide_id_str = context.user_data.get('guide_to_edit')
     if not guide_id_str:
-        await update.message.reply_text("שגיאה, לא נמצא מדריך לעריכה.", reply_markup=main_keyboard)
+        keyboard = admin_keyboard if ADMIN_ID and str(update.effective_user.id) == ADMIN_ID else main_keyboard
+        await update.message.reply_text("שגיאה, לא נמצא מדריך לעריכה.", reply_markup=keyboard)
         return ConversationHandler.END
     guides_collection.update_one({"_id": ObjectId(guide_id_str)}, {"$set": {"title": new_title}})
-    await update.message.reply_text(f"✅ השם עודכן בהצלחה ל: '{new_title}'", reply_markup=main_keyboard)
+    keyboard = admin_keyboard if ADMIN_ID and str(update.effective_user.id) == ADMIN_ID else main_keyboard
+    await update.message.reply_text(f"✅ השם עודכן בהצלחה ל: '{new_title}'", reply_markup=keyboard)
     context.user_data.clear()
     return ConversationHandler.END
 
 async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     update_user_activity(update.effective_user)
-    await update.message.reply_text('הפעולה בוטלה.', reply_markup=main_keyboard)
+    keyboard = admin_keyboard if ADMIN_ID and str(update.effective_user.id) == ADMIN_ID else main_keyboard
+    await update.message.reply_text('הפעולה בוטלה.', reply_markup=keyboard)
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -258,7 +281,41 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.answer()
     data = query.data
     if data == "noop": return
+    
+    # Handle admin menu callbacks
+    if data == "admin_recent_users":
+        if not ADMIN_ID or str(update.effective_user.id) != ADMIN_ID: return
+        seven_days_ago = datetime.utcnow() - timedelta(days=7)
+        recent_users = list(users_collection.find({"last_seen": {"$gte": seven_days_ago}}).sort("last_seen", -1))
+        if not recent_users:
+            await query.edit_message_text("לא היו משתמשים פעילים בשבוע האחרון.")
+            return
+        message = "👥 *משתמשים פעילים בשבוע האחרון:*\n\n"
+        for user in recent_users:
+            name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip()
+            last_seen = user.get("last_seen").strftime("%d/%m/%Y %H:%M")
+            message += f"🔹 *{escape_markdown_v2(name)}* \\- נראה לאחרונה: {last_seen} UTC\n"
+        await query.edit_message_text(message, parse_mode='MarkdownV2')
+        return
+    elif data == "admin_edit_guides":
+        if not ADMIN_ID or str(update.effective_user.id) != ADMIN_ID: return
+        text, keyboard = build_guides_paginator(0, mode='edit')
+        await query.edit_message_text(text, reply_markup=keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
+        return
+    elif data == "admin_delete_guides":
+        if not ADMIN_ID or str(update.effective_user.id) != ADMIN_ID: return
+        text, keyboard = build_guides_paginator(0, mode='delete')
+        await query.edit_message_text(text, reply_markup=keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
+        return
+    
     if "page:" in data:
+        # Handle loading animation for "הבא" button
+        if ":loading" in data:
+            # Show loading message
+            await query.edit_message_text("⏳ טוען מדריכים...")
+            await asyncio.sleep(0.2)  # 0.2 seconds delay
+            data = data.replace(":loading", "")  # Remove loading flag
+        
         mode_str, page_str = data.split("page:")
         page = int(page_str)
         text, keyboard = build_guides_paginator(page, mode=mode_str)
@@ -321,6 +378,7 @@ ptb_application.add_handler(CommandHandler("delete", delete_command))
 ptb_application.add_handler(CommandHandler("edit", edit_command))
 ptb_application.add_handler(CommandHandler("recent_users", recent_users_command))
 ptb_application.add_handler(CommandHandler("contact", contact_command))
+ptb_application.add_handler(MessageHandler(filters.Regex('^מנהל 👤$'), admin_menu))
 ptb_application.add_handler(CallbackQueryHandler(button_callback))
 
 if CHANNEL_ID: ptb_application.add_handler(MessageHandler(filters.Chat(chat_id=int(CHANNEL_ID)) & ~filters.COMMAND & ~filters.POLL, handle_new_guide_in_channel))

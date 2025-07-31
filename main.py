@@ -151,7 +151,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 בחר מה שתרצה מתוך הכפתורים למטה ⬇️
 
-📧 לכל תקלה או ביקורת ניתן לפנות ל-amirbiron@gmail.com או לחילופין ל@moominAmir בטלגרם
+📧 לכל תקלה או ביקורת ניתן לפנות ל-amirbiron@gmail.com או לחילופין ל-@moominAmir בטלגרם
 """
     inline_keyboard = [[InlineKeyboardButton("🧹 מדריך ניקוי מטמון (סמסונג)", url="https://t.me/AndroidAndAI/17")], [InlineKeyboardButton("🧠 מה ChatGPT באמת זוכר עליכם?", url="https://t.me/AndroidAndAI/20")], [InlineKeyboardButton("💸 טריק להנחה ל-GPT", url="https://t.me/AndroidAndAI/23")], [InlineKeyboardButton("📝 טופס שיתוף אנונימי", url="https://oa379okv.forms.app/untitled-form")], [InlineKeyboardButton("📚 כל המדריכים", callback_data="show_guides_start")]]
     await update.message.reply_text(start_text, reply_markup=InlineKeyboardMarkup(inline_keyboard))

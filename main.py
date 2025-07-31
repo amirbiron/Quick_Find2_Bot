@@ -150,6 +150,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 📥 טופס לשיתוף אנונימי של כלים או מחשבות
 
 בחר מה שתרצה מתוך הכפתורים למטה ⬇️
+
+📧 לכל תקלה או ביקורת ניתן לפנות ל-amirbiron@gmail.com או לחילופין ל@moominAmir בטלגרם
 """
     inline_keyboard = [[InlineKeyboardButton("🧹 מדריך ניקוי מטמון (סמסונג)", url="https://t.me/AndroidAndAI/17")], [InlineKeyboardButton("🧠 מה ChatGPT באמת זוכר עליכם?", url="https://t.me/AndroidAndAI/20")], [InlineKeyboardButton("💸 טריק להנחה ל-GPT", url="https://t.me/AndroidAndAI/23")], [InlineKeyboardButton("📝 טופס שיתוף אנונימי", url="https://oa379okv.forms.app/untitled-form")], [InlineKeyboardButton("📚 כל המדריכים", callback_data="show_guides_start")]]
     await update.message.reply_text(start_text, reply_markup=InlineKeyboardMarkup(inline_keyboard))
@@ -186,6 +188,19 @@ async def recent_users_command(update: Update, context: ContextTypes.DEFAULT_TYP
         last_seen = user.get("last_seen").strftime("%d/%m/%Y %H:%M")
         message += f"🔹 *{escape_markdown_v2(name)}* \\- נראה לאחרונה: {last_seen} UTC\n"
     await update.message.reply_text(message, parse_mode='MarkdownV2')
+
+async def contact_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    update_user_activity(update.effective_user)
+    contact_text = """
+📧 *פרטי יצירת קשר*
+
+לכל תקלה או ביקורת ניתן לפנות ל:
+• אימייל: amirbiron@gmail.com
+• טלגרם: @moominAmir
+
+נשמח לשמוע ממך! 😊
+"""
+    await update.message.reply_text(contact_text, parse_mode='MarkdownV2')
 
 # --- Conversation Handlers ---
 async def search_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -305,6 +320,7 @@ ptb_application.add_handler(CommandHandler("guides", guides_command))
 ptb_application.add_handler(CommandHandler("delete", delete_command))
 ptb_application.add_handler(CommandHandler("edit", edit_command))
 ptb_application.add_handler(CommandHandler("recent_users", recent_users_command))
+ptb_application.add_handler(CommandHandler("contact", contact_command))
 ptb_application.add_handler(CallbackQueryHandler(button_callback))
 
 if CHANNEL_ID: ptb_application.add_handler(MessageHandler(filters.Chat(chat_id=int(CHANNEL_ID)) & ~filters.COMMAND & ~filters.POLL, handle_new_guide_in_channel))

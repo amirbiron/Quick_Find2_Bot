@@ -74,8 +74,8 @@ def save_guide_from_message(message: Message) -> str | None:
     guide_text = message.text or message.caption
     if not guide_text or len(guide_text) < 100: return None
     
-    # Filter out weekly summaries that start with "אז מה היה לנו השבוע"
-    if guide_text.strip().startswith("אז מה היה לנו השבוע"):
+    # Filter out weekly summaries that start with "אז מה היה לנו השבוע?"
+    if guide_text.strip().startswith("אז מה היה לנו השבוע?"):
         return None
     
     if message.forward_origin:

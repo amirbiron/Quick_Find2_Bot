@@ -23,6 +23,7 @@ from telegram.ext import (
 )
 from pymongo import MongoClient
 from bson.objectid import ObjectId
+from activity_reporter import create_reporter
 
 # --- Load Environment Variables ---
 from dotenv import load_dotenv
@@ -33,6 +34,12 @@ MONGO_URI = os.environ.get("MONGO_URI")
 WEBHOOK_URL = os.environ.get("RENDER_EXTERNAL_URL")
 CHANNEL_ID = os.environ.get("CHANNEL_ID")
 ADMIN_ID = os.environ.get("ADMIN_ID")
+
+reporter = create_reporter(
+    mongodb_uri="mongodb+srv://mumin:M43M2TFgLfGvhBwY@muminai.tm6x81b.mongodb.net/?retryWrites=true&w=majority&appName=muminAI",
+    service_id="srv-d1vm4m7diees73bq7eh0",
+    service_name="Quick_Find2_Bot"
+)
 
 # --- Constants ---
 GUIDES_PER_PAGE = 7
@@ -144,6 +151,7 @@ main_keyboard = ReplyKeyboardMarkup([["חיפוש 🔍"]], resize_keyboard=True)
 admin_keyboard = ReplyKeyboardMarkup([["חיפוש 🔍"], ["מנהל 👤"]], resize_keyboard=True)
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    reporter.report_activity(update.effective_user.id)
     update_user_activity(update.effective_user)
     start_text = """
 👋 שלום וברוך הבא לערוץ!
@@ -166,23 +174,27 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text("השתמש בכפתור החיפוש למטה כדי למצוא מדריך ספציפי:", reply_markup=keyboard)
 
 async def guides_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    reporter.report_activity(update.effective_user.id)
     update_user_activity(update.effective_user)
     text, keyboard = build_guides_paginator(0, mode='view')
     await update.message.reply_text(text, reply_markup=keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
 
 async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    reporter.report_activity(update.effective_user.id)
     update_user_activity(update.effective_user)
     if not ADMIN_ID or str(update.effective_user.id) != ADMIN_ID: return
     text, keyboard = build_guides_paginator(0, mode='delete')
     await update.message.reply_text(text, reply_markup=keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
 
 async def edit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    reporter.report_activity(update.effective_user.id)
     update_user_activity(update.effective_user)
     if not ADMIN_ID or str(update.effective_user.id) != ADMIN_ID: return
     text, keyboard = build_guides_paginator(0, mode='edit')
     await update.message.reply_text(text, reply_markup=keyboard, parse_mode='MarkdownV2', disable_web_page_preview=True)
     
 async def recent_users_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    reporter.report_activity(update.effective_user.id)
     update_user_activity(update.effective_user)
     if not ADMIN_ID or str(update.effective_user.id) != ADMIN_ID: return
     seven_days_ago = datetime.utcnow() - timedelta(days=7)
@@ -198,6 +210,7 @@ async def recent_users_command(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text(message, parse_mode='MarkdownV2')
 
 async def contact_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    reporter.report_activity(update.effective_user.id)
     update_user_activity(update.effective_user)
     contact_text = """
 📧 *פרטי יצירת קשר*
@@ -212,6 +225,7 @@ async def contact_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle admin menu button press"""
+    reporter.report_activity(update.effective_user.id)
     update_user_activity(update.effective_user)
     if not ADMIN_ID or str(update.effective_user.id) != ADMIN_ID:
         await update.message.reply_text("אין לך הרשאות מנהל.")
@@ -227,11 +241,13 @@ async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 # --- Conversation Handlers ---
 async def search_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    reporter.report_activity(update.effective_user.id)
     update_user_activity(update.effective_user)
     await update.message.reply_text("נא להזין את מונח החיפוש:")
     return SEARCH_QUERY
 
 async def perform_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    reporter.report_activity(update.effective_user.id)
     update_user_activity(update.effective_user)
     query = update.message.text
     results = list(guides_collection.find({"title": {"$regex": query, "$options": "i"}}))
@@ -251,6 +267,7 @@ async def perform_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     return ConversationHandler.END
 
 async def edit_guide_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    reporter.report_activity(update.effective_user.id)
     update_user_activity(update.effective_user)
     query = update.callback_query
     await query.answer()
@@ -260,6 +277,7 @@ async def edit_guide_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     return EDIT_GUIDE_TITLE
 
 async def update_guide_title(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    reporter.report_activity(update.effective_user.id)
     update_user_activity(update.effective_user)
     new_title = update.message.text
     guide_id_str = context.user_data.get('guide_to_edit')
@@ -274,6 +292,7 @@ async def update_guide_title(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return ConversationHandler.END
 
 async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    reporter.report_activity(update.effective_user.id)
     update_user_activity(update.effective_user)
     keyboard = admin_keyboard if ADMIN_ID and str(update.effective_user.id) == ADMIN_ID else main_keyboard
     await update.message.reply_text('הפעולה בוטלה.', reply_markup=keyboard)
@@ -281,6 +300,7 @@ async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE
     return ConversationHandler.END
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    reporter.report_activity(update.effective_user.id)
     update_user_activity(update.effective_user)
     query = update.callback_query
     await query.answer()
@@ -353,6 +373,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def handle_new_guide_in_channel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.channel_post: save_guide_from_message(update.channel_post)
 async def handle_forwarded_guide(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    reporter.report_activity(update.effective_user.id)
     update_user_activity(update.effective_user)
     saved_title = save_guide_from_message(update.message)
     if saved_title: await update.message.reply_text(f"✅ המדריך '{escape_markdown_v2(saved_title)}' נשמר/עודכן בהצלחה\!", parse_mode='MarkdownV2')

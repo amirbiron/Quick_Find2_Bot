@@ -81,6 +81,10 @@ def save_guide_from_message(message: Message) -> str | None:
     guide_text = message.text or message.caption
     if not guide_text or len(guide_text) < 100: return None
     
+    # Skip saving if tagged with #skip
+    if "#skip" in guide_text.lower():
+        return None
+    
     # Filter out weekly summaries that start with "אז מה היה לנו השבוע?"
     if guide_text.strip().startswith("אז מה היה לנו השבוע?"):
         return None
@@ -375,6 +379,10 @@ async def handle_new_guide_in_channel(update: Update, context: ContextTypes.DEFA
 async def handle_forwarded_guide(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     reporter.report_activity(update.effective_user.id)
     update_user_activity(update.effective_user)
+    guide_text = update.message.text or update.message.caption
+    if guide_text and "#skip" in guide_text.lower():
+        await update.message.reply_text("ההודעה סומנה כ־#skip ולא נשמרה.")
+        return
     saved_title = save_guide_from_message(update.message)
     if saved_title: await update.message.reply_text(f"✅ המדריך '{escape_markdown_v2(saved_title)}' נשמר/עודכן בהצלחה\!", parse_mode='MarkdownV2')
     else: await update.message.reply_text("לא ניתן היה לשמור את ההודעה\.")

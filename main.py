@@ -79,7 +79,10 @@ def update_user_activity(user):
 
 def save_guide_from_message(message: Message) -> str | None:
     guide_text = message.text or message.caption
-    if not guide_text or len(guide_text) < 100: return None
+    if not guide_text: return None
+    
+    # Apply minimum length only for original posts (not forwarded)
+    if not message.forward_origin and len(guide_text) < 100: return None
     
     # Skip saving if tagged with #skip
     if "#skip" in guide_text.lower():

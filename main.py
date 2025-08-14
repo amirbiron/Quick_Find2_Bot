@@ -103,6 +103,17 @@ def save_guide_from_message(message: Message) -> str | None:
     guides_collection.update_one({"original_message_id": original_message_id, "original_chat_id": original_chat_id}, {"$set": guide_document}, upsert=True)
     return title
 
+def find_guide_link_by_title(title_query: str) -> str | None:
+    """Return a Telegram post link for the first guide whose title matches the given regex (case-insensitive)."""
+    guide = guides_collection.find_one({"title": {"$regex": title_query, "$options": "i"}})
+    if not guide:
+        return None
+    chat_id = guide.get("original_chat_id")
+    msg_id = guide.get("original_message_id")
+    if not chat_id or not msg_id:
+        return None
+    return f"https://t.me/c/{str(chat_id).replace('-100', '', 1)}/{msg_id}"
+
 def build_guides_paginator(page: int = 0, mode='view'):
     guides_count = guides_collection.count_documents({})
     if guides_count == 0: return "לא נמצאו מדריכים במערכת.", None
@@ -165,13 +176,28 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 📌 מדריכים שימושיים בעברית
 🧰 כלים מומלצים (AI, מדריכים לאנדרואיד, בוטים)
 💡 רעיונות לפרויקטים אמיתיים
-📥 טופס לשיתוף אנונימי של כלים או מחשבות
+📚 מדריכים מעודכנים לשנת 2025
 
 בחר מה שתרצה מתוך הכפתורים למטה ⬇️
 
 📧 לכל תקלה או ביקורת ניתן לפנות ל-amirbiron@gmail.com או לחילופין ל-@moominAmir בטלגרם
 """
-    inline_keyboard = [[InlineKeyboardButton("🧹 מדריך ניקוי מטמון (סמסונג)", url="https://t.me/AndroidAndAI/17")], [InlineKeyboardButton("🧠 מה ChatGPT באמת זוכר עליכם?", url="https://t.me/AndroidAndAI/20")], [InlineKeyboardButton("💸 טריק להנחה ל-GPT", url="https://t.me/AndroidAndAI/23")], [InlineKeyboardButton("📝 טופס שיתוף אנונימי", url="https://oa379okv.forms.app/untitled-form")], [InlineKeyboardButton("📚 כל המדריכים", callback_data="show_guides_start")]]
+    inline_keyboard = [
+        [InlineKeyboardButton("🧹 מדריך ניקוי מטמון (סמסונג)", url="https://t.me/AndroidAndAI/17")],
+        [InlineKeyboardButton("🧠 מה ChatGPT באמת זוכר עליכם?", url="https://t.me/AndroidAndAI/20")],
+        [InlineKeyboardButton("💸 טריק להנחה ל-GPT", url="https://t.me/AndroidAndAI/23")]
+    ]
+
+    # Try to include requested guides dynamically by title if they exist in DB
+    ai_tools_link = find_guide_link_by_title("מדריך.*כלי.*2025|כלים.*2025|2025.*מדריך")
+    if ai_tools_link:
+        inline_keyboard.append([InlineKeyboardButton("🧠 מדריך כלי הבינה המלאכותית המקיף לשנת 2025", url=ai_tools_link)])
+
+    midjourney_link = find_guide_link_by_title("מידג.?רני|Midjourney")
+    if midjourney_link:
+        inline_keyboard.append([InlineKeyboardButton("🎨 מדריך בסיסי למידג'רני", url=midjourney_link)])
+
+    inline_keyboard.append([InlineKeyboardButton("📚 כל המדריכים", callback_data="show_guides_start")])
     await update.message.reply_text(start_text, reply_markup=InlineKeyboardMarkup(inline_keyboard))
     # Use admin keyboard for admin, regular keyboard for others
     keyboard = admin_keyboard if ADMIN_ID and str(update.effective_user.id) == ADMIN_ID else main_keyboard
